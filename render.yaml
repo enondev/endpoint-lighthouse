@@ -1,0 +1,41 @@
+services:
+  - type: web
+    name: endpoint-lighthouse-api
+    runtime: docker
+    plan: free
+    region: oregon
+    rootDir: services/api
+    dockerfilePath: ./Dockerfile
+    healthCheckPath: /health
+    envVars:
+      - key: PORT
+        value: "8080"
+      - key: GOGC
+        value: "50"
+      - key: GOMEMLIMIT
+        value: "16MiB"
+      - key: DRIFT_COOLDOWN_SEC
+        value: "900"
+      - key: ALLOWED_ORIGIN
+        value: "*"
+      - key: REDIS_URL
+        fromService:
+          type: redis
+          name: endpoint-lighthouse-redis
+          property: connectionString
+      - key: INTERNAL_WEBHOOK_SECRET
+        generateValue: true
+      - key: CF_ACCOUNT_ID
+        sync: false
+      - key: CF_D1_DATABASE_ID
+        sync: false
+      - key: CF_API_TOKEN
+        sync: false
+      - key: SNAPDEPLOY_WORKER_URL
+        sync: false
+
+  - type: redis
+    name: endpoint-lighthouse-redis
+    plan: free
+    region: oregon
+    ipAllowList: [] # Restricts access strictly to your private Render services
