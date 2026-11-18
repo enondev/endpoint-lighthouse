@@ -10,7 +10,7 @@ All test suites run completely offline against local mocks.
 
 **AI Worker Unit & Integration Tests (`12/12` passing):**
 ```bash
-cd services/ai-worker-py
+cd services/ai-worker
 pytest -v
 ```
 
