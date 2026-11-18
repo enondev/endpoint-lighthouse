@@ -4,4 +4,3 @@ httpx==0.28.1
 deepdiff==8.1.1
 pydantic==2.10.4
 pydantic-settings==2.7.1
-respx==0.23.1
