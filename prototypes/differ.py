@@ -30,7 +30,7 @@ MAX_TOKENS = 256 # (~7 neurons)
 
 CF_ACCOUNT_ID = os.getenv("CF_ACCOUNT_ID", "")
 CF_API_TOKEN = os.getenv("CF_API_TOKEN", "")
-CF_AI_MODEL = os.getenv("CF_AI_MODEL", "@cf/meta/llama-3.1-8b-instruct")
+CF_AI_MODEL = os.getenv("CF_AI_MODEL", "@cf/google/gemma-4-26b-a4b-it")
 CF_D1_DATABASE_ID = os.getenv("CF_D1_DATABASE_ID", "")
 
 async def sync_incident_to_d1(

@@ -6,21 +6,21 @@ import httpx
 
 from app.config import settings
 
-logger = logging.getLogger("specwatch.cloudflare")
+logger = logging.getLogger("endpoint_lighthouse.cloudflare")
 
 VALID_SEVERITIES = {"NON_BREAKING", "WARNING", "BREAKING"}
-
+MAX_TOKENS = 750
 
 class CloudflareClient:
     def __init__(self) -> None:
-        self.base_url = f"https://cloudflare.com{settings.cf_account_id}"
+        self.base_url = f"https://api.cloudflare.com/client/v4/accounts/{settings.cf_account_id}"
         self.headers = {
             "Authorization": f"Bearer {settings.cf_api_token}",
             "Content-Type": "application/json",
         }
 
     async def get_kv_snapshot(self, client: httpx.AsyncClient, kv_key: str) -> Any:
-        """Fetches immutable raw JSON snapshot from SPECWATCH_SNAPSHOTS KV."""
+        """Fetches immutable raw JSON snapshot from ENDPOINT_LIGHTHOUSE_SNAPSHOTS KV."""
         url = f"{self.base_url}/storage/kv/namespaces/{settings.cf_kv_namespace_id}/values/{kv_key}"
         resp = await client.get(url, headers={"Authorization": f"Bearer {settings.cf_api_token}"})
         resp.raise_for_status()
@@ -37,9 +37,9 @@ class CloudflareClient:
         url = f"{self.base_url}/ai/run/{settings.cf_ai_model}"
 
         system_prompt = (
-            "You are SpecWatch AI, an expert API contract and schema reliability engineer. "
+            "You are Endpoint Lighthouse AI, an expert API contract and schema reliability engineer. "
             "Analyze the provided JSON DeepDiff output and respond ONLY with valid JSON. "
-            "Do not include markdown fences or text outside the JSON object. "
+            f"Do not include markdown fences or text outside the JSON object. Fit your response in {MAX_TOKENS} tokens"
             "Required JSON format:\n"
             "{\n"
             '  "severity": "BREAKING" | "WARNING" | "NON_BREAKING",\n'
@@ -59,7 +59,7 @@ class CloudflareClient:
                 {"role": "user", "content": user_prompt},
             ],
             "temperature": 0.1,
-            "max_tokens": 750,
+            "max_tokens": MAX_TOKENS,
         }
 
         resp = await client.post(url, headers=self.headers, json=payload)
@@ -104,7 +104,7 @@ class CloudflareClient:
         ai_analysis_str: str,
         ai_patch_snippet: str,
     ) -> None:
-        """Updates drift_incidents row in Cloudflare D1 matching 001_init.sql schema."""
+        """Updates drift_incidents row in Cloudflare D1 matching schema."""
         url = f"{self.base_url}/d1/database/{settings.cf_d1_database_id}/query"
 
         if incident_id is not None:

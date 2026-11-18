@@ -100,8 +100,8 @@ func main() {
 		_, _ = w.Write([]byte(`{"status":"dispatched"}`))
 	})
 
-	// Internal Webhook: AI Analysis Complete (from ai-worker-py)
-	mux.HandleFunc("POST /internal/analysis-complete", func(w http.ResponseWriter, r *http.Request) {
+	// Internal Webhook: AI Analysis Complete (from ai-worker)
+	mux.HandleFunc("POST /internal/analysis-completed", func(w http.ResponseWriter, r *http.Request) {
 		if !validSecret(r.Header.Get("X-Internal-Secret"), cfg.InternalWebhookSecret) {
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
@@ -130,24 +130,42 @@ func validSecret(provided, expected string) bool {
 }
 
 func triggerSnapDeploy(workerURL, secret string, body []byte) {
-	client := &http.Client{Timeout: 10 * time.Second}
-	req, err := http.NewRequest(http.MethodPost, workerURL+"/analyze", bytes.NewReader(body))
-	if err != nil {
-		log.Printf("[ERROR] snapdeploy request build failed: %v", err)
-		return
-	}
-	req.Header.Set("Content-Type", "application/json")
-	if secret != "" {
-		req.Header.Set("X-Internal-Secret", secret)
-	}
+	targetURL := strings.TrimRight(workerURL, "/") + "/analyze"
+	client := &http.Client{Timeout: 45 * time.Second}
+	backoffs := []time.Duration{0, 3 * time.Second, 8 * time.Second, 15 * time.Second}
 
-	resp, err := client.Do(req)
-	if err != nil {
-		log.Printf("[ERROR] snapdeploy trigger failed: %v", err)
-		return
+	for attempt, wait := range backoffs {
+		if wait > 0 {
+			time.Sleep(wait)
+		}
+		req, err := http.NewRequest(http.MethodPost, targetURL, bytes.NewReader(body))
+		if err != nil {
+			log.Printf("[ERROR] snapdeploy request build failed: %v", err)
+			return
+		}
+		req.Header.Set("Content-Type", "application/json")
+		if secret != "" {
+			req.Header.Set("X-Internal-Secret", secret)
+		}
+
+		resp, err := client.Do(req)
+		if err != nil {
+			log.Printf("[WARN] snapdeploy attempt %d/%d failed: %v", attempt+1, len(backoffs), err)
+			continue
+		}
+		respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
+		resp.Body.Close()
+
+		if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+			log.Printf("[INFO] snapdeploy triggered, status=%d", resp.StatusCode)
+			return
+		}
+		log.Printf("[WARN] snapdeploy attempt %d/%d status=%d body=%s", attempt+1, len(backoffs), resp.StatusCode, string(respBody))
+		if resp.StatusCode < 500 && resp.StatusCode != http.StatusTooManyRequests {
+			return
+		}
 	}
-	defer resp.Body.Close()
-	log.Printf("[INFO] snapdeploy triggered, status=%d", resp.StatusCode)
+	log.Printf("[ERROR] snapdeploy exhausted all retries for %s", targetURL)
 }
 
 func withCORS(origin string, next http.Handler) http.Handler {

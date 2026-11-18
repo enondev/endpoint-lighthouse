@@ -16,10 +16,10 @@ logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
 )
-logger = logging.getLogger("specwatch.ai_worker")
+logger = logging.getLogger("endpoint_lighthouse.ai_worker")
 
 app = FastAPI(
-    title="SpecWatch AI Analysis Worker",
+    title="Endpoint Lighthouse AI Analysis Worker",
     version="1.0.0",
     docs_url=None,
     redoc_url=None,
@@ -84,16 +84,16 @@ async def analyze_drift(
     timeout = httpx.Timeout(settings.http_timeout_seconds)
     async with httpx.AsyncClient(timeout=timeout) as client:
         try:
-            # 1. Fetch baseline & drifted snapshots from Cloudflare KV
+            # Fetch baseline & drifted snapshots from Cloudflare KV
             baseline_snap = await cf_client.get_kv_snapshot(client, old_kv_key)
             drifted_snap = await cf_client.get_kv_snapshot(client, new_kv_key)
 
-            # 2. Compute structural & type diff via DeepDiff
+            # Compute structural & type diff via DeepDiff
             diff_summary = compute_semantic_diff(baseline_snap, drifted_snap)
             if not diff_summary:
                 diff_summary = {"note": "Schema hash changed due to structural normalization."}
 
-            # 3. Run Cloudflare Workers AI (@cf/meta/llama-3.1-8b-instruct)
+            # Run Cloudflare Workers AI (@cf/meta/llama-3.1-8b-instruct)
             ai_result = await cf_client.run_llm_analysis(
                 client=client,
                 endpoint_name=payload.endpoint_name,
@@ -106,7 +106,7 @@ async def analyze_drift(
             patch_snippet = ai_result["patch_snippet"]
             diff_json_str = json.dumps(diff_summary)
 
-            # 4. Persist diff_summary, ai_analysis, and ai_patch_snippet into D1
+            # Persist diff_summary, ai_analysis, and ai_patch_snippet into D1
             await cf_client.update_d1_incident(
                 client=client,
                 incident_id=payload.incident_id,
@@ -119,7 +119,7 @@ async def analyze_drift(
                 ai_patch_snippet=patch_snippet,
             )
 
-            # 5. Notify Render API Gateway to broadcast SSE `analysis_ready` event
+            # Notify Render API Gateway to broadcast SSE `analysis_ready` event
             callback_url = f"{settings.render_api_url.rstrip('/')}/internal/analysis-completed"
             callback_payload: dict[str, Any] = {
                 "incident_id": payload.incident_id,

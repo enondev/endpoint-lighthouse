@@ -16,8 +16,8 @@ class Settings(BaseSettings):
     cf_d1_database_id: str
     cf_kv_namespace_id: str
 
-    # Workers AI Model (Llama 3.1 8B Instruct avoids reasoning token truncation)
-    cf_ai_model: str = "@cf/meta/llama-3.1-8b-instruct"
+    # Workers AI Model
+    cf_ai_model: str = "@cf/google/gemma-4-26b-a4b-it"
 
     # Runtime bounds
     max_diff_chars: int = 12000
