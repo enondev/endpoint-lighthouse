@@ -1,0 +1,162 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Endpoint Lighthouse — API Contract &amp; Schema Drift Monitor</title>
+  <link rel="stylesheet" href="./styles.css" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <span class="logo-dot" id="sse-dot" title="SSE Stream Status"></span>
+      <div>
+        <h1>Endpoint Lighthouse</h1>
+        <p class="subtitle">API Contract &amp; Schema Drift Monitor</p>
+      </div>
+    </div>
+
+    <div class="header-controls">
+      <div class="sse-pill" id="sse-status" aria-live="polite">
+        <span class="pulse"></span>
+        <span id="sse-label">Connecting to SSE...</span>
+      </div>
+      <button type="button" class="btn btn-ghost" id="btn-config" title="Configure API Gateway URL">
+        API Target
+      </button>
+      <button type="button" class="btn btn-primary" id="btn-refresh">
+        Refresh
+      </button>
+    </div>
+  </header>
+
+  <section class="config-bar hidden" id="config-bar">
+    <label for="api-url-input">Render Gateway URL:</label>
+    <input
+      type="url"
+      id="api-url-input"
+      placeholder="https://onrender.com"
+      spellcheck="false"
+    />
+    <button type="button" class="btn btn-primary" id="btn-save-api">Save &amp; Reconnect</button>
+  </section>
+
+  <main class="container">
+    <!-- Top KPI Summary Strip -->
+    <section class="kpi-grid" aria-label="System Metrics">
+      <article class="kpi-card">
+        <span class="kpi-label">Monitored Public APIs</span>
+        <strong class="kpi-value" id="kpi-endpoints">—</strong>
+        <span class="kpi-meta">Zero-PII Synthetic Probes</span>
+      </article>
+      <article class="kpi-card">
+        <span class="kpi-label">Open Drift Incidents</span>
+        <strong class="kpi-value" id="kpi-open-incidents">—</strong>
+        <span class="kpi-meta" id="kpi-breaking-count">0 Breaking</span>
+      </article>
+      <article class="kpi-card">
+        <span class="kpi-label">Gateway &amp; Edge Status</span>
+        <strong class="kpi-value status-ok" id="kpi-gateway-status">Checking...</strong>
+        <span class="kpi-meta" id="kpi-last-sync">Syncing D1 + Redis</span>
+      </article>
+      <article class="kpi-card">
+        <span class="kpi-label">Live Event Stream</span>
+        <strong class="kpi-value" id="kpi-events-count">0</strong>
+        <span class="kpi-meta" id="kpi-last-ping">Awaiting heartbeat</span>
+      </article>
+    </section>
+
+    <!-- Main 2-Column Split: Drift Incidents Feed + Monitored Endpoints Matrix -->
+    <div class="workspace-grid">
+      <!-- Left Column: Live Drift Incidents & AI Analysis -->
+      <section class="panel" aria-labelledby="incidents-heading">
+        <div class="panel-header">
+          <div>
+            <h2 id="incidents-heading">Drift Incidents &amp; AI Migration Analysis</h2>
+            <p class="panel-desc">Real-time schema mutations analyzed via DeepDiff &amp; Llama 3.1 8B</p>
+          </div>
+          <select id="severity-filter" aria-label="Filter incidents by severity">
+            <option value="ALL">All Severities</option>
+            <option value="BREAKING">BREAKING</option>
+            <option value="WARNING">WARNING</option>
+            <option value="NON_BREAKING">NON_BREAKING</option>
+            <option value="PENDING">PENDING</option>
+          </select>
+        </div>
+
+        <div id="incidents-list" class="incidents-list">
+          <div class="empty-state">Loading drift incidents...</div>
+        </div>
+      </section>
+
+      <!-- Right Column: Endpoint Health & Schema Baselines -->
+      <section class="panel" aria-labelledby="endpoints-heading">
+        <div class="panel-header">
+          <div>
+            <h2 id="endpoints-heading">Endpoint Baselines</h2>
+            <p class="panel-desc">Active schema hashes &amp; probe intervals</p>
+          </div>
+          <select id="category-filter" aria-label="Filter endpoints by category">
+            <option value="ALL">All Categories</option>
+          </select>
+        </div>
+
+        <div id="endpoints-list" class="endpoints-list">
+          <div class="empty-state">Loading monitored endpoints...</div>
+        </div>
+      </section>
+    </div>
+  </main>
+
+  <!-- Incident Deep-Dive Modal -->
+  <dialog id="incident-modal" class="modal">
+    <div class="modal-content">
+      <div class="modal-header">
+        <div>
+          <span class="badge" id="modal-severity">PENDING</span>
+          <h3 id="modal-title">Incident Details</h3>
+        </div>
+        <button type="button" class="btn btn-ghost" id="btn-close-modal" aria-label="Close modal">✕</button>
+      </div>
+
+      <div class="modal-body">
+        <div class="hash-compare">
+          <div>
+            <span class="hash-label">Baseline Hash</span>
+            <code id="modal-old-hash">—</code>
+          </div>
+          <span class="arrow">→</span>
+          <div>
+            <span class="hash-label">Drifted Hash</span>
+            <code id="modal-new-hash">—</code>
+          </div>
+        </div>
+
+        <div class="detail-block">
+          <h4>AI Impact Analysis</h4>
+          <p id="modal-analysis" class="analysis-text">Pending AI worker analysis...</p>
+        </div>
+
+        <div class="detail-block">
+          <div class="block-header">
+            <h4>Suggested Client Migration Patch</h4>
+            <button type="button" class="btn btn-ghost btn-sm" id="btn-copy-patch">Copy Snippet</button>
+          </div>
+          <pre class="code-block"><code id="modal-patch">// No patch snippet generated yet.</code></pre>
+        </div>
+
+        <div class="detail-block">
+          <h4>Deterministic Structural Diff (DeepDiff)</h4>
+          <pre class="code-block"><code id="modal-diff">{}</code></pre>
+        </div>
+      </div>
+    </div>
+  </dialog>
+
+  <footer class="footer">
+    <span>Endpoint Lighthouse - API Drift Observation + Analysis</span>
+  </footer>
+
+  <script src="./app.js" defer></script>
+</body>
+</html>

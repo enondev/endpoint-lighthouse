@@ -1,0 +1,27 @@
+from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+class Settings(BaseSettings):
+    model_config = SettingsConfigDict(env_file=".env", extra="ignore")
+
+    # Security
+    internal_webhook_secret: str
+
+    # Render Gateway Callback
+    render_api_url: str
+
+    # Cloudflare API Credentials
+    cf_account_id: str
+    cf_api_token: str
+    cf_d1_database_id: str
+    cf_kv_namespace_id: str
+
+    # Workers AI Model (Llama 3.1 8B Instruct avoids reasoning token truncation)
+    cf_ai_model: str = "@cf/meta/llama-3.1-8b-instruct"
+
+    # Runtime bounds
+    max_diff_chars: int = 12000
+    http_timeout_seconds: float = 25.0
+
+
+settings = Settings()
