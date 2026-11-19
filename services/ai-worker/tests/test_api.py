@@ -43,7 +43,7 @@ def test_analyze_full_pipeline_success(
     old_kv_key = f"snap:ep-github-status:{old_hash[:16]}"
     new_kv_key = f"snap:ep-github-status:{new_hash[:16]}"
 
-    cf_base = f"https://cloudflare.com{settings.cf_account_id}"
+    cf_base = f"https://api.cloudflare.com/client/v4/accounts/{settings.cf_account_id}"
 
     # 1. Mock KV snapshot fetches
     respx.get(
@@ -122,7 +122,7 @@ def test_analyze_returns_502_when_kv_fetch_fails(
     client: TestClient,
     valid_headers: dict[str, str],
 ) -> None:
-    cf_base = f"https://cloudflare.com{settings.cf_account_id}"
+    cf_base = f"https://api.cloudflare.com/client/v4/accounts/{settings.cf_account_id}"
     respx.get(
         f"{cf_base}/storage/kv/namespaces/{settings.cf_kv_namespace_id}/values/snap:ep-1:1111111111111111"
     ).mock(return_value=httpx.Response(404, text="Key not found"))
@@ -136,6 +136,5 @@ def test_analyze_returns_502_when_kv_fetch_fails(
             "new_schema_hash": "2222222222222222bbbb",
         },
     )
-
     assert resp.status_code == 502
     assert "Upstream service error: 404" in resp.json()["detail"]

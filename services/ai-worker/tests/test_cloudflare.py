@@ -52,7 +52,8 @@ def test_parse_llm_json_handles_non_json_fallback() -> None:
 @pytest.mark.asyncio
 async def test_update_d1_incident_uses_hash_fallback_when_incident_id_none() -> None:
     cf = CloudflareClient()
-    d1_url = f"https://cloudflare.com{settings.cf_account_id}/d1/database/{settings.cf_d1_database_id}/query"
+    cf_base = f"https://api.cloudflare.com/client/v4/accounts/{settings.cf_account_id}"
+    d1_url = f"{cf_base}/d1/database/{settings.cf_d1_database_id}/query"
     route = respx.post(d1_url).mock(return_value=httpx.Response(200, json={"success": True}))
 
     async with httpx.AsyncClient() as client:
