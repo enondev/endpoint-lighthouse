@@ -34,7 +34,7 @@ type DriftWebhookPayload struct {
 
 var (
 	snapDeployHTTPClient = &http.Client{Timeout: 45 * time.Second}
-	snapDeployBackoffs   = []time.Duration{0, 3 * time.Second, 8 * time.Second, 15 * time.Second}
+	snapDeployBackoffs   = []time.Duration{0, 10 * time.Second, 20 * time.Second, 35 * time.Second}
 )
 
 func main() {

@@ -1,6 +1,7 @@
 import hmac
 import json
 import logging
+import socket
 import time
 from typing import Any
 
@@ -27,7 +28,6 @@ app = FastAPI(
 
 cf_client = CloudflareClient()
 
-
 class AnalyzeRequest(BaseModel):
     incident_id: int | None = Field(default=None)
     endpoint_id: str = Field(..., min_length=1)
@@ -38,14 +38,12 @@ class AnalyzeRequest(BaseModel):
     baseline_kv_key: str | None = Field(default=None)
     drifted_kv_key: str | None = Field(default=None)
 
-
 class AnalyzeResponse(BaseModel):
     status: str
     incident_id: int | None
     endpoint_id: str
     severity: str
     duration_ms: int
-
 
 def verify_internal_secret(x_internal_secret: str | None) -> None:
     if not x_internal_secret or not hmac.compare_digest(
@@ -56,11 +54,26 @@ def verify_internal_secret(x_internal_secret: str | None) -> None:
             detail="Invalid or missing X-Internal-Secret",
         )
 
+async def resolve_cloudflare_ip() -> str | None:
+    """Fallback resolver using Cloudflare DoH over raw IP 1.1.1.1 if container DNS fails."""
+    try:
+        async with httpx.AsyncClient(timeout=5.0) as dns_client:
+            r = await dns_client.get(
+                "https://1.1.1.1",
+                params={"name": "api.cloudflare.com", "type": "A"},
+                headers={"Accept": "application/dns-json"},
+            )
+            r.raise_for_status()
+            for ans in r.json().get("Answer", []):
+                if ans.get("type") == 1 and ans.get("data"):
+                    return ans["data"]
+    except Exception:
+        return None
+    return None
 
 @app.get("/health")
 async def health() -> dict[str, str]:
     return {"status": "ok", "service": "ai-worker"}
-
 
 @app.post("/analyze", response_model=AnalyzeResponse)
 async def analyze_drift(
@@ -82,7 +95,8 @@ async def analyze_drift(
     )
 
     timeout = httpx.Timeout(settings.http_timeout_seconds)
-    async with httpx.AsyncClient(timeout=timeout) as client:
+    transport = httpx.AsyncHTTPTransport(local_address="0.0.0.0", retries=2)
+    async with httpx.AsyncClient(transport=transport, timeout=timeout) as client:
         try:
             # Fetch baseline & drifted snapshots from Cloudflare KV
             baseline_snap = await cf_client.get_kv_snapshot(client, old_kv_key)
