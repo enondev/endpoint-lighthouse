@@ -6,7 +6,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"io"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/enondev/endpoint-lighthouse-api/internal/cloudflare"
