@@ -60,20 +60,28 @@ class CloudflareClient:
             ],
             "temperature": 0.1,
             "max_tokens": MAX_TOKENS,
+            "response_format": {"type": "json_object"},
         }
 
         resp = await client.post(url, headers=self.headers, json=payload)
         resp.raise_for_status()
         data = resp.json()
 
-        raw_text = data.get("result", {}).get("response", "").strip()
-        return self._parse_llm_json(raw_text)
+        result = data.get("result") or {}
+        raw_text = result.get("response") or ""
+        if not raw_text and isinstance(result.get("choices"), list) and result["choices"]:
+            msg = result["choices"][0].get("message") or {}
+            raw_text = msg.get("content") or ""
+
+        return self._parse_llm_json(str(raw_text).strip())
 
     def _parse_llm_json(self, raw_text: str) -> dict[str, Any]:
         """Safely parses LLM JSON output with deterministic fallback."""
-        cleaned = raw_text
-        if cleaned.startswith("```"):
-            cleaned = cleaned.strip("`").removeprefix("json").strip()
+        cleaned = raw_text.strip()
+        start = cleaned.find("{")
+        end = cleaned.rfind("}")
+        if start != -1 and end != -1 and end > start:
+            cleaned = cleaned[start : end + 1]
 
         try:
             parsed = json.loads(cleaned)
@@ -85,7 +93,7 @@ class CloudflareClient:
                 "patch_snippet": str(parsed.get("patch_snippet", "")),
             }
         except json.JSONDecodeError:
-            logger.warning("Workers AI returned non-JSON output; wrapping safely.")
+            logger.warning("Workers AI returned non-JSON output (len=%d): %r", len(raw_text), raw_text[:120])
             return {
                 "severity": "WARNING",
                 "analysis": raw_text[:500] if raw_text else "Automated drift analysis completed.",
