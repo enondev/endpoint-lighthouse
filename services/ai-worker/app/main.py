@@ -61,7 +61,10 @@ async def resolve_cloudflare_ip() -> str | None:
             r = await dns_client.get(
                 "https://1.1.1.1",
                 params={"name": "api.cloudflare.com", "type": "A"},
-                headers={"Accept": "application/dns-json"},
+                headers={
+                    "User-Agent": "EndpointLighthouse-ai-worker/0.1 (+https://github.com/enondev/endpoint-lighthouse)",
+                    "Accept": "application/dns-json"
+                },
             )
             r.raise_for_status()
             for ans in r.json().get("Answer", []):
