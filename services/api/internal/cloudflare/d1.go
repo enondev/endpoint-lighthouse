@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"strings"
 	"time"
 )
@@ -35,9 +36,13 @@ type d1QueryResponse struct {
 }
 	 
 func NewD1Client(accountID, databaseID, apiToken string) *D1Client {
+	base := strings.TrimRight(os.Getenv("CF_API_BASE"), "/")
+	if base == "" {
+		base = "https://api.cloudflare.com"
+	}
 	return &D1Client{
 		endpoint: fmt.Sprintf("%s/client/v4/accounts/%s/d1/database/%s/query",
-			cfAPIBase,
+			base,
 			strings.TrimSpace(accountID),
 			strings.TrimSpace(databaseID)),
 		apiToken: apiToken,

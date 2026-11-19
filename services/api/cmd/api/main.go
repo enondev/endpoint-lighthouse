@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"crypto/subtle"
 	"encoding/json"
 	"fmt"
@@ -31,6 +32,11 @@ type DriftWebhookPayload struct {
 	DetectedAt     string `json:"detected_at"`           // Matches drift_incidents.detected_at
 }
 
+var (
+	snapDeployHTTPClient = &http.Client{Timeout: 45 * time.Second}
+	snapDeployBackoffs   = []time.Duration{0, 3 * time.Second, 8 * time.Second, 15 * time.Second}
+)
+
 func main() {
 	cfg := config.Load()
 
@@ -58,7 +64,7 @@ func main() {
 	mux.Handle("GET /api/v1/incidents", withCORS(cfg.AllowedOrigin, http.HandlerFunc(apiHandler.HandleIncidents)))
 	mux.Handle("GET /api/v1/stream", withCORS(cfg.AllowedOrigin, hub))
 
-	// Internal Webhook: Drift Detected (from prober-go)
+	// Internal Webhook: Drift Detected (from probe)
 	mux.HandleFunc("POST /internal/drift", func(w http.ResponseWriter, r *http.Request) {
 		if !validSecret(r.Header.Get("X-Internal-Secret"), cfg.InternalWebhookSecret) {
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
@@ -102,6 +108,7 @@ func main() {
 		_, _ = w.Write([]byte(`{"status":"dispatched"}`))
 	})
 
+	
 	// Internal Webhook: AI Analysis Complete (from ai-worker)
 	mux.HandleFunc("POST /internal/analysis-completed", func(w http.ResponseWriter, r *http.Request) {
 		if !validSecret(r.Header.Get("X-Internal-Secret"), cfg.InternalWebhookSecret) {
@@ -111,11 +118,55 @@ func main() {
 		apiHandler.HandleAnalysisComplete(w, r)
 	})
 
+  // Internal Admin Endpoint: On-Demand Reconciliation Sweeper for Unanalyzed OPEN Incidents
+	mux.HandleFunc("POST /internal/reconcile", func(w http.ResponseWriter, r *http.Request) {
+		if !validSecret(r.Header.Get("X-Internal-Secret"), cfg.InternalWebhookSecret) {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		dispatched, err := reconcilePending(r.Context(), apiHandler, rdb, cfg.SnapDeployWorkerURL, cfg.InternalWebhookSecret, 10)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusAccepted)
+		_, _ = fmt.Fprintf(w, `{"status":"reconciled","dispatched":%d}`, dispatched)
+	})
+
 	srv := &http.Server{
 		Addr:              ":" + cfg.Port,
 		Handler:           mux,
 		ReadHeaderTimeout: 5 * time.Second,
 		IdleTimeout:       120 * time.Second,
+	}
+
+	// Periodic Self-Healing Reconciliation Sweeper (quota-safe: queries D1 first, wakes SnapDeploy only if pending rows exist)
+	if cfg.SnapDeployWorkerURL != "" {
+		go func() {
+			// Initial boot delay to let Render & Redis stabilize
+			time.Sleep(15 * time.Second)
+
+			runSweep := func() {
+				ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+				defer cancel()
+				dispatched, err := reconcilePending(ctx, apiHandler, rdb, cfg.SnapDeployWorkerURL, cfg.InternalWebhookSecret, 5)
+				if err != nil {
+					log.Printf("[WARN] periodic reconciliation sweep failed: %v", err)
+					return
+				}
+				if dispatched > 0 {
+					log.Printf("[INFO] periodic reconciliation dispatched %d orphaned incident(s)", dispatched)
+				}
+			}
+
+			runSweep()
+			ticker := time.NewTicker(15 * time.Minute)
+			defer ticker.Stop()
+			for range ticker.C {
+				runSweep()
+			}
+		}()
 	}
 
 	log.Printf("Endpoint Lighthouse api listening on :%s", cfg.Port)
@@ -131,12 +182,46 @@ func validSecret(provided, expected string) bool {
 	return subtle.ConstantTimeCompare([]byte(provided), []byte(expected)) == 1
 }
 
+func reconcilePending(
+	ctx context.Context,
+	h *handlers.APIHandler,
+	rdb *redis.Client,
+	workerURL string,
+	secret string,
+	limit int,
+) (int, error) {
+	if workerURL == "" {
+		return 0, nil
+	}
+	pending, err := h.FetchPendingIncidents(ctx, limit)
+	if err != nil {
+		return 0, err
+	}
+	dispatched := 0
+	for _, inc := range pending {
+		lockKey := fmt.Sprintf("reconcile:incident:%d", inc.IncidentID)
+		acquired, lockErr := rdb.AcquireCooldown(lockKey, 5*time.Minute)
+		if lockErr != nil {
+			log.Printf("[WARN] redis reconcile lock failed (failing open): %v", lockErr)
+			acquired = true
+		}
+		if !acquired {
+			continue
+		}
+		body, err := json.Marshal(inc)
+		if err != nil {
+			continue
+		}
+		go triggerSnapDeploy(workerURL, secret, body)
+		dispatched++
+	}
+	return dispatched, nil
+}
+
 func triggerSnapDeploy(workerURL, secret string, body []byte) {
 	targetURL := strings.TrimRight(workerURL, "/") + "/analyze"
-	client := &http.Client{Timeout: 45 * time.Second}
-	backoffs := []time.Duration{0, 3 * time.Second, 8 * time.Second, 15 * time.Second}
 
-	for attempt, wait := range backoffs {
+	for attempt, wait := range snapDeployBackoffs {
 		if wait > 0 {
 			time.Sleep(wait)
 		}
@@ -150,9 +235,9 @@ func triggerSnapDeploy(workerURL, secret string, body []byte) {
 			req.Header.Set("X-Internal-Secret", secret)
 		}
 
-		resp, err := client.Do(req)
+		resp, err := snapDeployHTTPClient.Do(req)
 		if err != nil {
-			log.Printf("[WARN] snapdeploy attempt %d/%d failed: %v", attempt+1, len(backoffs), err)
+			log.Printf("[WARN] snapdeploy attempt %d/%d failed: %v", attempt+1, len(snapDeployBackoffs), err)
 			continue
 		}
 		respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
@@ -162,7 +247,7 @@ func triggerSnapDeploy(workerURL, secret string, body []byte) {
 			log.Printf("[INFO] snapdeploy triggered, status=%d", resp.StatusCode)
 			return
 		}
-		log.Printf("[WARN] snapdeploy attempt %d/%d status=%d body=%s", attempt+1, len(backoffs), resp.StatusCode, string(respBody))
+		log.Printf("[WARN] snapdeploy attempt %d/%d status=%d body=%s", attempt+1, len(snapDeployBackoffs), resp.StatusCode, string(respBody))
 		if resp.StatusCode < 500 && resp.StatusCode != http.StatusTooManyRequests {
 			return
 		}
