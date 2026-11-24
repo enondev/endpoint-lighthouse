@@ -160,7 +160,7 @@ func main() {
 			}
 
 			runSweep()
-			ticker := time.NewTicker(fmt.Sprintf("%d", cfg.ReconcilePeriod) * time.Minute)
+			ticker := time.NewTicker(cfg.ReconcilePeriod * time.Minute)
 			defer ticker.Stop()
 			for range ticker.C {
 				runSweep()

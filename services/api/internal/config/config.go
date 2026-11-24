@@ -18,7 +18,7 @@ type Config struct {
 	CFAPIToken            string
 	CFAccountID           string
 	CFD1DatabaseID        string
-	ReconcilePeriod       string
+	ReconcilePeriod       time.Duration
 }
 
 func Load() Config {
@@ -27,6 +27,11 @@ func Load() Config {
 	ttlSec, err := strconv.Atoi(getEnv("DRIFT_COOLDOWN_SEC", "900"))
 	if err != nil || ttlSec <= 0 {
 		ttlSec = 900
+	}
+
+	rpMin, err := strconv.Atoi(getEnv("RECONCILE_PERIOD", "7"))
+	if err != nil || rpMin <= 0 {
+		rpMin = 7
 	}
 
 	return Config{
@@ -39,7 +44,7 @@ func Load() Config {
 		CFAPIToken:            os.Getenv("CF_API_TOKEN"),
 		CFAccountID:           os.Getenv("CF_ACCOUNT_ID"),
 		CFD1DatabaseID:        os.Getenv("CF_D1_DATABASE_ID"),
-		ReconcilePeriod:       getEnv("RECONCILE_PERIOD", "7"),
+		ReconcilePeriod:       time.Duration(rpMin) * time.Minute,
 	}
 }
 
