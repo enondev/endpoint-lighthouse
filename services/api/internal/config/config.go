@@ -18,6 +18,7 @@ type Config struct {
 	CFAPIToken            string
 	CFAccountID           string
 	CFD1DatabaseID        string
+	ReconcilePeriod       string
 }
 
 func Load() Config {
@@ -38,6 +39,7 @@ func Load() Config {
 		CFAPIToken:            os.Getenv("CF_API_TOKEN"),
 		CFAccountID:           os.Getenv("CF_ACCOUNT_ID"),
 		CFD1DatabaseID:        os.Getenv("CF_D1_DATABASE_ID"),
+		ReconcilePeriod:       os.Getenv("RECONCILE_PERIOD", "7"),
 	}
 }
 

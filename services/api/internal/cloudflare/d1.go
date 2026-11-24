@@ -34,7 +34,7 @@ type d1QueryResponse struct {
 		Results []map[string]any `json:"results"`
 	} `json:"result"`
 }
-	 
+
 func NewD1Client(accountID, databaseID, apiToken string) *D1Client {
 	base := strings.TrimRight(os.Getenv("CF_API_BASE"), "/")
 	if base == "" {

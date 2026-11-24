@@ -18,14 +18,14 @@ type APIHandler struct {
 }
 
 type PendingIncident struct {
-	IncidentID     int64  `json:"incident_id"`
-	EndpointID     string `json:"endpoint_id"`
-	EndpointName   string `json:"endpoint_name"`
-	EndpointURL    string `json:"endpoint_url"`
-	OldSchemaHash  string `json:"old_schema_hash"`
-	NewSchemaHash  string `json:"new_schema_hash"`
-	BaselineKVKey  string `json:"baseline_kv_key,omitempty"`
-	DriftedKVKey   string `json:"drifted_kv_key,omitempty"`
+	IncidentID    int64  `json:"incident_id"`
+	EndpointID    string `json:"endpoint_id"`
+	EndpointName  string `json:"endpoint_name"`
+	EndpointURL   string `json:"endpoint_url"`
+	OldSchemaHash string `json:"old_schema_hash"`
+	NewSchemaHash string `json:"new_schema_hash"`
+	BaselineKVKey string `json:"baseline_kv_key,omitempty"`
+	DriftedKVKey  string `json:"drifted_kv_key,omitempty"`
 }
 
 func NewAPIHandler(d1 *cloudflare.D1Client, hub *sse.Hub) *APIHandler {
@@ -169,7 +169,7 @@ func (h *APIHandler) HandleIncidents(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"incidents": rows})
 }
 
-// FetchPendingIncidents queries D1 for OPEN incidents still awaiting AI analysis.
+// FetchPendingIncidents queries D1 for incidents awaiting AI analysis or stuck with fallback analysis.
 func (h *APIHandler) FetchPendingIncidents(ctx context.Context, limit int) ([]PendingIncident, error) {
 	if limit <= 0 || limit > 25 {
 		limit = 5
@@ -190,9 +190,13 @@ func (h *APIHandler) FetchPendingIncidents(ctx context.Context, limit int) ([]Pe
 			ON sb_old.endpoint_id = di.endpoint_id AND sb_old.schema_hash = di.old_schema_hash
 		LEFT JOIN schema_baselines sb_new
 			ON sb_new.endpoint_id = di.endpoint_id AND sb_new.schema_hash = di.new_schema_hash
-		WHERE di.status = 'OPEN'
-		  AND (di.ai_analysis IS NULL OR TRIM(di.ai_analysis) = '')
-		ORDER BY di.detected_at ASC
+		WHERE (
+			(di.status = 'OPEN' AND (di.ai_analysis IS NULL OR TRIM(di.ai_analysis) = ''))
+			OR di.ai_analysis LIKE '%Automated drift analysis completed.%'
+		)
+		  AND sb_old.kv_snapshot_key IS NOT NULL
+		  AND sb_new.kv_snapshot_key IS NOT NULL
+		ORDER BY di.detected_at DESC
 		LIMIT ?;
 	`
 	rows, err := h.d1.Query(ctx, sql, limit)

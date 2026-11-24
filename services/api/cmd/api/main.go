@@ -6,8 +6,8 @@ import (
 	"crypto/subtle"
 	"encoding/json"
 	"fmt"
-	"log"
 	"io"
+	"log"
 	"net/http"
 	"strings"
 	"time"
@@ -25,11 +25,11 @@ type DriftWebhookPayload struct {
 	EndpointName   string `json:"endpoint_name,omitempty"`
 	OldSchemaHash  string `json:"old_schema_hash"`
 	NewSchemaHash  string `json:"new_schema_hash"`
-	OldSnapshotKey string `json:"old_snapshot_key"`      // Matches schema_baselines.kv_snapshot_key
+	OldSnapshotKey string `json:"old_snapshot_key"` // Matches schema_baselines.kv_snapshot_key
 	NewSnapshotKey string `json:"new_snapshot_key"`
-	Severity       string `json:"severity"`              // 'PENDING' | 'NON_BREAKING' | 'WARNING' | 'BREAKING'
+	Severity       string `json:"severity"` // 'PENDING' | 'NON_BREAKING' | 'WARNING' | 'BREAKING'
 	DiffSummary    string `json:"diff_summary"`
-	DetectedAt     string `json:"detected_at"`           // Matches drift_incidents.detected_at
+	DetectedAt     string `json:"detected_at"` // Matches drift_incidents.detected_at
 }
 
 var (
@@ -108,7 +108,6 @@ func main() {
 		_, _ = w.Write([]byte(`{"status":"dispatched"}`))
 	})
 
-	
 	// Internal Webhook: AI Analysis Complete (from ai-worker)
 	mux.HandleFunc("POST /internal/analysis-completed", func(w http.ResponseWriter, r *http.Request) {
 		if !validSecret(r.Header.Get("X-Internal-Secret"), cfg.InternalWebhookSecret) {
@@ -118,7 +117,7 @@ func main() {
 		apiHandler.HandleAnalysisComplete(w, r)
 	})
 
-  // Internal Admin Endpoint: On-Demand Reconciliation Sweeper for Unanalyzed OPEN Incidents
+	// Internal Admin Endpoint: On-Demand Reconciliation Sweeper for Unanalyzed OPEN Incidents
 	mux.HandleFunc("POST /internal/reconcile", func(w http.ResponseWriter, r *http.Request) {
 		if !validSecret(r.Header.Get("X-Internal-Secret"), cfg.InternalWebhookSecret) {
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
@@ -161,7 +160,7 @@ func main() {
 			}
 
 			runSweep()
-			ticker := time.NewTicker(15 * time.Minute)
+			ticker := time.NewTicker(fmt.Sprintf("%d", cfg.ReconcilePeriod) * time.Minute)
 			defer ticker.Stop()
 			for range ticker.C {
 				runSweep()
