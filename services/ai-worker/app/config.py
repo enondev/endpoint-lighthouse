@@ -20,7 +20,7 @@ class Settings(BaseSettings):
     cf_ai_model: str = "@cf/google/gemma-4-26b-a4b-it"
 
     # Runtime bounds
-    max_diff_chars: int = 12000
+    max_diff_chars: int = 4500
     http_timeout_seconds: float = 25.0
 
 

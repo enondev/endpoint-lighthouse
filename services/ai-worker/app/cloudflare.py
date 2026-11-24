@@ -11,6 +11,7 @@ logger = logging.getLogger("endpoint_lighthouse.cloudflare")
 VALID_SEVERITIES = {"NON_BREAKING", "WARNING", "BREAKING"}
 MAX_TOKENS = 750
 
+
 class CloudflareClient:
     def __init__(self) -> None:
         self.base_url = f"https://api.cloudflare.com/client/v4/accounts/{settings.cf_account_id}"
@@ -18,6 +19,78 @@ class CloudflareClient:
             "Authorization": f"Bearer {settings.cf_api_token}",
             "Content-Type": "application/json",
         }
+
+    def _build_payload(
+        self,
+        endpoint_name: str,
+        endpoint_url: str,
+        diff_str: str,
+        strict_json: bool = True
+    ) -> dict:
+        system_prompt = (
+            "You are Endpoint Lighthouse AI, an expert API contract and schema reliability engineer. "
+            "Analyze the provided JSON DeepDiff output and respond ONLY with valid JSON. "
+            f"Do not include markdown fences or text outside the JSON object. Fit your response in {MAX_TOKENS} tokens"
+            "Required JSON format:\n"
+            "{\n"
+            '  "severity": "BREAKING" | "WARNING" | "NON_BREAKING",\n'
+            '  "analysis": "Concise 2-3 sentence summary of what changed and its downstream client impact.",\n'
+            '  "recommended_actions": [\n'
+            '    "1-2 short, plain-English action steps telling the user what to check, update, or mitigate (no code blocks or CLI commands)."\n'
+            '  ]\n'
+            "}"
+        )
+        body = {
+            "messages": [
+                {"role": "system", "content": system_prompt},
+                {
+                    "role": "user",
+                    "content": f"Endpoint: {endpoint_name} ({endpoint_url})\nStructured Diff:\n{diff_str}",
+                },
+            ],
+            "temperature": 0.1,
+            "max_tokens": MAX_TOKENS,
+        }
+        if strict_json:
+            body["response_format"] = {"type": "json_object"}
+        return body
+
+    def _log_envelope(self, data: Any, label: str) -> None:
+        """Emit structured observability for the Workers AI response envelope."""
+        if not isinstance(data, dict):
+            logger.warning(
+                "Workers AI %s returned non-dict body (type=%s): %r",
+                label,
+                type(data).__name__,
+                str(data)[:200],
+            )
+            return
+        success = data.get("success")
+        errors = data.get("errors")
+        messages = data.get("messages")
+        result = data.get("result")
+        result_keys = list(result.keys()) if isinstance(result, dict) else None
+        logger.warning(
+            "Workers AI %s envelope: success=%s errors=%s messages=%s result_keys=%s body_preview=%r",
+            label,
+            success,
+            errors,
+            messages,
+            result_keys,
+            str(data)[:300],
+        )
+
+    def _extract_raw(self, data: Any) -> str:
+        if not isinstance(data, dict):
+            return ""
+        result = data.get("result") or {}
+        if not isinstance(result, dict):
+            result = {}
+        text = result.get("response") or ""
+        if not text and isinstance(result.get("choices"), list) and result["choices"]:
+            msg = result["choices"][0].get("message") or {}
+            text = msg.get("content") or ""
+        return str(text).strip()
 
     async def get_kv_snapshot(self, client: httpx.AsyncClient, kv_key: str) -> Any:
         """Fetches immutable raw JSON snapshot from ENDPOINT_LIGHTHOUSE_SNAPSHOTS KV."""
@@ -36,44 +109,50 @@ class CloudflareClient:
         """Invokes Cloudflare Workers AI to generate structured migration & risk analysis."""
         url = f"{self.base_url}/ai/run/{settings.cf_ai_model}"
 
-        system_prompt = (
-            "You are Endpoint Lighthouse AI, an expert API contract and schema reliability engineer. "
-            "Analyze the provided JSON DeepDiff output and respond ONLY with valid JSON. "
-            f"Do not include markdown fences or text outside the JSON object. Fit your response in {MAX_TOKENS} tokens"
-            "Required JSON format:\n"
-            "{\n"
-            '  "severity": "BREAKING" | "WARNING" | "NON_BREAKING",\n'
-            '  "analysis": "Concise 2-3 sentence summary of what changed and its downstream client impact.",\n'
-            '  "patch_snippet": "Short TypeScript or Python client adapter/fallback snippet showing how consumers can safely handle the schema change."\n'
-            "}"
-        )
+        compact_diff = json.dumps(diff_summary, separators=(",", ":"))
+        if len(compact_diff) > settings.max_diff_chars:
+            compact_diff = compact_diff[:settings.max_diff_chars] + "...[truncated]"
 
-        user_prompt = (
-            f"Endpoint: {endpoint_name} ({endpoint_url})\n"
-            f"Structured Diff:\n{json.dumps(diff_summary, indent=2)[:settings.max_diff_chars]}"
-        )
-
-        payload = {
-            "messages": [
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt},
-            ],
-            "temperature": 0.1,
-            "max_tokens": MAX_TOKENS,
-            "response_format": {"type": "json_object"},
-        }
-
+        payload = self._build_payload(endpoint_name, endpoint_url, compact_diff, strict_json=True)
         resp = await client.post(url, headers=self.headers, json=payload)
         resp.raise_for_status()
         data = resp.json()
 
-        result = data.get("result") or {}
-        raw_text = result.get("response") or ""
-        if not raw_text and isinstance(result.get("choices"), list) and result["choices"]:
-            msg = result["choices"][0].get("message") or {}
-            raw_text = msg.get("content") or ""
+        self._log_envelope(data, "initial_response")
 
-        return self._parse_llm_json(str(raw_text).strip())
+        if not data.get("success", True):
+            errors = data.get("errors") or []
+            raise RuntimeError(
+                f"Workers AI upstream reported failure (success=False): {errors}"
+            )
+
+        raw_text = self._extract_raw(data)
+
+        if not raw_text:
+            logger.warning(
+                "Workers AI returned empty response after initial call; retrying with shorter diff and strict_json=False"
+            )
+            payload = self._build_payload(endpoint_name, endpoint_url, compact_diff[:2000], strict_json=False)
+            resp = await client.post(url, headers=self.headers, json=payload)
+            resp.raise_for_status()
+            retry_data = resp.json()
+            self._log_envelope(retry_data, "retry_response")
+
+            if not retry_data.get("success", True):
+                errors = retry_data.get("errors") or []
+                raise RuntimeError(
+                    f"Workers AI retry reported failure (success=False): {errors}"
+                )
+
+            raw_text = self._extract_raw(retry_data)
+
+        if not raw_text:
+            logger.error(
+                "Workers AI returned empty text on both attempts; cannot produce analysis. "
+                "Check model availability, response_format support, and diff size."
+            )
+
+        return self._parse_llm_json(raw_text)
 
     def _parse_llm_json(self, raw_text: str) -> dict[str, Any]:
         """Safely parses LLM JSON output with deterministic fallback."""
@@ -82,6 +161,14 @@ class CloudflareClient:
         end = cleaned.rfind("}")
         if start != -1 and end != -1 and end > start:
             cleaned = cleaned[start : end + 1]
+
+        if not cleaned:
+            logger.warning("Workers AI returned empty text; applying empty-response fallback")
+            return {
+                "severity": "WARNING",
+                "analysis": "Automated drift analysis completed; LLM returned no usable output.",
+                "patch_snippet": "// Manual client schema update recommended based on diff_summary.",
+            }
 
         try:
             parsed = json.loads(cleaned)
