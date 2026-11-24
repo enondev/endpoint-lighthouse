@@ -74,6 +74,7 @@ async def test_update_d1_incident_uses_hash_fallback_when_incident_id_none() -> 
     assert "WHERE endpoint_id = ?" in sent_body["sql"]
     assert sent_body["params"] == [
         "BREAKING",
+        0,
         '{"fields_removed":["root[\'x\']"]}',
         "Removed x",
         "// patch",

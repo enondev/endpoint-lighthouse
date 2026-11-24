@@ -108,65 +108,78 @@ func (h *APIHandler) HandleIncidents(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	statusFilter := r.URL.Query().Get("status") // Optional: 'OPEN', 'ACKNOWLEDGED', 'RESOLVED'
+	page := 1
+	if rawPage := r.URL.Query().Get("page"); rawPage != "" {
+		if parsed, err := strconv.Atoi(rawPage); err == nil && parsed > 0 {
+			page = parsed
+		}
+	}
+	offset := (page - 1) * limit
 
-	var (
-		rows []map[string]any
-		err  error
-	)
+	statusFilter := r.URL.Query().Get("status") // Optional: 'OPEN', 'ACKNOWLEDGED', 'RESOLVED'
+	fromFilter := r.URL.Query().Get("from")     // Optional: RFC3339 / ISO date
+	toFilter := r.URL.Query().Get("to")         // Optional: RFC3339 / ISO date
+
+	// Build the WHERE clause and args once, reused by both COUNT and SELECT
+	whereSql := "WHERE 1=1"
+	args := []any{}
 
 	if statusFilter == "OPEN" || statusFilter == "ACKNOWLEDGED" || statusFilter == "RESOLVED" {
-		// Uses idx_incidents_status (status, detected_at DESC)
-		sql := `
-			SELECT
-				di.id,
-				di.endpoint_id,
-				e.name AS endpoint_name,
-				e.category AS endpoint_category,
-				di.old_schema_hash,
-				di.new_schema_hash,
-				di.severity,
-				di.diff_summary,
-				di.ai_analysis,
-				di.ai_patch_snippet,
-				di.status,
-				di.detected_at
-			FROM drift_incidents di
-			LEFT JOIN endpoints e ON e.id = di.endpoint_id
-			WHERE di.status = ?
-			ORDER BY di.detected_at DESC
-			LIMIT ?
-		`
-		rows, err = h.d1.Query(r.Context(), sql, statusFilter, limit)
-	} else {
-		sql := `
-			SELECT
-				di.id,
-				di.endpoint_id,
-				e.name AS endpoint_name,
-				e.category AS endpoint_category,
-				di.old_schema_hash,
-				di.new_schema_hash,
-				di.severity,
-				di.diff_summary,
-				di.ai_analysis,
-				di.ai_patch_snippet,
-				di.status,
-				di.detected_at
-			FROM drift_incidents di
-			LEFT JOIN endpoints e ON e.id = di.endpoint_id
-			ORDER BY di.detected_at DESC
-			LIMIT ?
-		`
-		rows, err = h.d1.Query(r.Context(), sql, limit)
+		whereSql += " AND di.status = ?"
+		args = append(args, statusFilter)
 	}
 
+	if fromFilter != "" {
+		whereSql += " AND di.detected_at >= ?"
+		args = append(args, fromFilter)
+	}
+	if toFilter != "" {
+		whereSql += " AND di.detected_at <= ?"
+		args = append(args, toFilter)
+	}
+
+	// Count total matching rows for pagination metadata
+	countSql := `SELECT COUNT(*) as total FROM drift_incidents di LEFT JOIN endpoints e ON e.id = di.endpoint_id ` + whereSql
+	countRows, err := h.d1.Query(r.Context(), countSql, args...)
+	if err != nil {
+		writeJSON(w, http.StatusBadGateway, map[string]string{"error": err.Error()})
+		return
+	}
+	totalCount := 0
+	if len(countRows) > 0 {
+		if c, ok := countRows[0]["total"].(float64); ok {
+			totalCount = int(c)
+		}
+	}
+
+	sql := `
+		SELECT
+			di.id,
+			di.endpoint_id,
+			e.name AS endpoint_name,
+			e.category AS endpoint_category,
+			di.old_schema_hash,
+			di.new_schema_hash,
+			di.severity,
+			di.severity_score,
+			di.diff_summary,
+			di.ai_analysis,
+			di.ai_patch_snippet,
+			di.status,
+			di.detected_at
+		FROM drift_incidents di
+		LEFT JOIN endpoints e ON e.id = di.endpoint_id
+		` + whereSql + `
+		ORDER BY di.detected_at DESC LIMIT ? OFFSET ?`
+	args = append(args, limit, offset)
+
+	rows, err := h.d1.Query(r.Context(), sql, args...)
 	if err != nil {
 		writeJSON(w, http.StatusBadGateway, map[string]string{"error": err.Error()})
 		return
 	}
 
-	writeJSON(w, http.StatusOK, map[string]any{"incidents": rows})
+	writeJSON(w, http.StatusOK, map[string]any{"incidents": rows, "total_count": totalCount, "page": page, "limit": limit})
 }
 
 // FetchPendingIncidents queries D1 for incidents awaiting AI analysis or stuck with fallback analysis.

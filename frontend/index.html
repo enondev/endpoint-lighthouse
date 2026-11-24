@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Endpoint Lighthouse — API Contract &amp; Schema Drift Monitor</title>
+  <title>Endpoint Lighthouse — API Contract & Schema Drift Monitor</title>
   <link rel="stylesheet" href="./style.css" />
 </head>
 <body>
@@ -19,8 +19,11 @@
     <div class="header-controls">
       <div class="sse-pill" id="sse-status" aria-live="polite">
         <span class="pulse"></span>
-        <span id="sse-label">Connecting to SSE...</span>
+        <span id="sse-label">Connecting to SSE&hellip;</span>
       </div>
+      <button type="button" class="btn btn-ghost" id="btn-sse-pause" title="Pause live event stream">
+        &#10074;&#10074;
+      </button>
       <button type="button" class="btn btn-ghost" id="btn-config" title="Configure API Gateway URL">
         API Target
       </button>
@@ -55,8 +58,14 @@
         <span class="kpi-meta" id="kpi-breaking-count">0 Breaking</span>
       </article>
       <article class="kpi-card">
+        <span class="kpi-label">Being Analyzed (PENDING)</span>
+        <strong class="kpi-value" id="kpi-analyzing-count" style="color:var(--pending);">0</strong>
+        <span class="kpi-meta">AI worker processing</span>
+      </article>
+      <article class="kpi-card gateway-kpi" id="kpi-gateway-card">
         <span class="kpi-label">Gateway &amp; Edge Status</span>
-        <strong class="kpi-value status-ok" id="kpi-gateway-status">Checking...</strong>
+        <strong class="kpi-value status-ok" id="kpi-gateway-status">Checking&hellip;</strong>
+        <span class="kpi-meta" id="kpi-gateway-detail">No recent incidents</span>
         <span class="kpi-meta" id="kpi-last-sync">Syncing D1 + Redis</span>
       </article>
       <article class="kpi-card">
@@ -64,6 +73,67 @@
         <strong class="kpi-value" id="kpi-events-count">0</strong>
         <span class="kpi-meta" id="kpi-last-ping">Awaiting heartbeat</span>
       </article>
+      <article class="kpi-card severity-kpi" id="kpi-severity-dist">
+        <span class="kpi-label">Severity Distribution</span>
+        <div class="severity-bars">
+          <div class="severity-bar">
+            <span class="severity-label">BREAKING</span>
+            <span class="severity-value breaking" id="kpi-sev-breaking">0</span>
+          </div>
+          <div class="severity-bar">
+            <span class="severity-label">WARNING</span>
+            <span class="severity-value warning" id="kpi-sev-warning">0</span>
+          </div>
+          <div class="severity-bar">
+            <span class="severity-label">NON_BREAKING</span>
+            <span class="severity-value nonbreaking" id="kpi-sev-nonbreaking">0</span>
+          </div>
+          <div class="severity-bar">
+            <span class="severity-label">PENDING</span>
+            <span class="severity-value pending" id="kpi-sev-pending">0</span>
+          </div>
+        </div>
+      </article>
+    </section>
+
+    <!-- Controls Bar: Search + Status Filter + Severity Filter -->
+    <section class="controls-bar" aria-label="Incident filters">
+      <div class="search-wrap">
+        <span class="search-icon">&#x1F50D;</span>
+        <input
+          type="search"
+          id="incident-search"
+          placeholder="Search incidents by endpoint&hellip;"
+          aria-label="Search incidents"
+        />
+      </div>
+
+      <div class="date-range-wrap">
+        <label class="date-label">From</label>
+        <input type="date" id="date-from" aria-label="Start date" />
+        <label class="date-label">To</label>
+        <input type="date" id="date-to" aria-label="End date" />
+      </div>
+
+      <select id="status-filter" aria-label="Filter incidents by analysis status">
+        <option value="ALL">All Statuses</option>
+        <option value="PENDING">Analyzing (PENDING)</option>
+        <option value="OPEN">Open</option>
+        <option value="ACKNOWLEDGED">Acknowledged</option>
+        <option value="RESOLVED">Resolved</option>
+      </select>
+
+      <select id="severity-filter" aria-label="Filter incidents by severity">
+        <option value="ALL">All Severities</option>
+        <option value="BREAKING">BREAKING</option>
+        <option value="WARNING">WARNING</option>
+        <option value="NON_BREAKING">NON_BREAKING</option>
+        <option value="PENDING">PENDING</option>
+      </select>
+
+      <button type="button" class="btn btn-ghost btn-sm" id="btn-export" title="Export filtered incidents">
+        &#x1F4E5; Export
+      </button>
     </section>
 
     <!-- Main 2-Column Split: Drift Incidents Feed + Monitored Endpoints Matrix -->
@@ -73,19 +143,18 @@
         <div class="panel-header">
           <div>
             <h2 id="incidents-heading">Drift Incidents &amp; AI Migration Analysis</h2>
-            <p class="panel-desc">Real-time schema mutations analyzed via DeepDiff &amp; Llama 3.1 8B</p>
+            <p class="panel-desc">Real-time schema mutations analyzed via DeepDiff &amp; LLM. PENDING = AI worker processing.</p>
           </div>
-          <select id="severity-filter" aria-label="Filter incidents by severity">
-            <option value="ALL">All Severities</option>
-            <option value="BREAKING">BREAKING</option>
-            <option value="WARNING">WARNING</option>
-            <option value="NON_BREAKING">NON_BREAKING</option>
-            <option value="PENDING">PENDING</option>
-          </select>
         </div>
 
         <div id="incidents-list" class="incidents-list">
-          <div class="empty-state">Loading drift incidents...</div>
+          <div class="empty-state">Loading drift incidents&hellip;</div>
+        </div>
+
+        <div class="pagination-bar" id="pagination-bar" style="display:none;">
+          <button type="button" class="btn btn-ghost btn-sm" id="btn-prev-page" disabled>&#10094; Prev</button>
+          <span id="pagination-info" class="pagination-info">Page <span id="pagination-page">1</span></span>
+          <button type="button" class="btn btn-ghost btn-sm" id="btn-next-page">Next &#10095;</button>
         </div>
       </section>
 
@@ -102,7 +171,7 @@
         </div>
 
         <div id="endpoints-list" class="endpoints-list">
-          <div class="empty-state">Loading monitored endpoints...</div>
+          <div class="empty-state">Loading monitored endpoints&hellip;</div>
         </div>
       </section>
     </div>
@@ -114,9 +183,10 @@
       <div class="modal-header">
         <div>
           <span class="badge" id="modal-severity">PENDING</span>
+          <span class="status-chip" id="modal-status-chip" style="display:none;">PROCESSING</span>
           <h3 id="modal-title">Incident Details</h3>
         </div>
-        <button type="button" class="btn btn-ghost" id="btn-close-modal" aria-label="Close modal">✕</button>
+        <button type="button" class="btn btn-ghost" id="btn-close-modal" aria-label="Close modal">&#x2715;</button>
       </div>
 
       <div class="modal-body">
@@ -125,7 +195,7 @@
             <span class="hash-label">Baseline Hash</span>
             <code id="modal-old-hash">—</code>
           </div>
-          <span class="arrow">→</span>
+          <span class="arrow">&#8594;</span>
           <div>
             <span class="hash-label">Drifted Hash</span>
             <code id="modal-new-hash">—</code>
@@ -133,8 +203,11 @@
         </div>
 
         <div class="detail-block">
-          <h4>AI Impact Analysis</h4>
-          <p id="modal-analysis" class="analysis-text">Pending AI worker analysis...</p>
+          <div class="block-header">
+            <h4>AI Impact Analysis</h4>
+            <span class="badge" id="modal-analysis-status" style="background:var(--pending);color:#c7d2fe;">Analyzing</span>
+          </div>
+          <p id="modal-analysis" class="analysis-text">Pending AI worker analysis&hellip;</p>
         </div>
 
         <div class="detail-block">
@@ -148,6 +221,17 @@
         <div class="detail-block">
           <h4>Deterministic Structural Diff (DeepDiff)</h4>
           <pre class="code-block"><code id="modal-diff">{}</code></pre>
+        </div>
+
+        <div class="detail-block">
+          <h4>Metadata</h4>
+          <div class="meta-grid">
+            <div class="meta-item"><span class="meta-label">Incident ID</span><span class="meta-value" id="modal-meta-id">—</span></div>
+            <div class="meta-item"><span class="meta-label">Endpoint ID</span><span class="meta-value" id="modal-meta-endpoint-id">—</span></div>
+            <div class="meta-item"><span class="meta-label">Severity Score</span><span class="meta-value" id="modal-meta-score">—</span></div>
+            <div class="meta-item"><span class="meta-label">Detected At</span><span class="meta-value" id="modal-meta-detected">—</span></div>
+            <div class="meta-item"><span class="meta-label">Status</span><span class="meta-value" id="modal-meta-status">—</span></div>
+          </div>
         </div>
       </div>
     </div>

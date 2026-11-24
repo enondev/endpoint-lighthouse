@@ -5,6 +5,7 @@ from typing import Any
 import httpx
 
 from app.config import settings
+from app.scoring import ScoringEngine
 
 logger = logging.getLogger("endpoint_lighthouse.cloudflare")
 
@@ -19,6 +20,7 @@ class CloudflareClient:
             "Authorization": f"Bearer {settings.cf_api_token}",
             "Content-Type": "application/json",
         }
+        self.scorer = ScoringEngine.from_file()
 
     def _build_payload(
         self,
@@ -92,6 +94,19 @@ class CloudflareClient:
             text = msg.get("content") or ""
         return str(text).strip()
 
+    def calculate_severity_score(
+        self,
+        severity: str,
+        status: str = "OPEN",
+        diff_summary: dict[str, Any] | None = None,
+    ) -> int:
+        """Calculate a normalized severity score (0-100) using the configured ScoringEngine."""
+        return self.scorer.calculate(
+            severity=severity,
+            status=status,
+            diff_summary=diff_summary,
+        )
+
     async def get_kv_snapshot(self, client: httpx.AsyncClient, kv_key: str) -> Any:
         """Fetches immutable raw JSON snapshot from ENDPOINT_LIGHTHOUSE_SNAPSHOTS KV."""
         url = f"{self.base_url}/storage/kv/namespaces/{settings.cf_kv_namespace_id}/values/{kv_key}"
@@ -152,7 +167,13 @@ class CloudflareClient:
                 "Check model availability, response_format support, and diff size."
             )
 
-        return self._parse_llm_json(raw_text, diff_summary=diff_summary)
+        ai_result = self._parse_llm_json(raw_text, diff_summary=diff_summary)
+        ai_result["severity_score"] = self.calculate_severity_score(
+            severity=ai_result["severity"],
+            status="OPEN",
+            diff_summary=diff_summary,
+        )
+        return ai_result
 
     def _fallback_patch_snippet(self, diff_summary: dict[str, Any] | None) -> str:
         if not diff_summary:
@@ -215,6 +236,7 @@ class CloudflareClient:
         diff_summary_str: str,
         ai_analysis_str: str,
         ai_patch_snippet: str,
+        severity_score: int = 0,
     ) -> None:
         """Updates drift_incidents row in Cloudflare D1 matching schema."""
         url = f"{self.base_url}/d1/database/{settings.cf_d1_database_id}/query"
@@ -223,6 +245,7 @@ class CloudflareClient:
             sql = """
                 UPDATE drift_incidents
                 SET severity = ?,
+                    severity_score = ?,
                     diff_summary = ?,
                     ai_analysis = ?,
                     ai_patch_snippet = ?
@@ -230,6 +253,7 @@ class CloudflareClient:
             """
             params: list[Any] = [
                 severity,
+                severity_score,
                 diff_summary_str,
                 ai_analysis_str,
                 ai_patch_snippet,
@@ -239,6 +263,7 @@ class CloudflareClient:
             sql = """
                 UPDATE drift_incidents
                 SET severity = ?,
+                    severity_score = ?,
                     diff_summary = ?,
                     ai_analysis = ?,
                     ai_patch_snippet = ?
@@ -248,6 +273,7 @@ class CloudflareClient:
             """
             params = [
                 severity,
+                severity_score,
                 diff_summary_str,
                 ai_analysis_str,
                 ai_patch_snippet,

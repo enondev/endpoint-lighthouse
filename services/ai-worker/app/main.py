@@ -119,6 +119,7 @@ async def analyze_drift(
             )
 
             severity = ai_result["severity"]
+            severity_score = ai_result.get("severity_score", 0)
             analysis_text = ai_result["analysis"]
             patch_snippet = ai_result["patch_snippet"]
             diff_json_str = json.dumps(diff_summary)
@@ -131,6 +132,7 @@ async def analyze_drift(
                 old_schema_hash=payload.old_schema_hash,
                 new_schema_hash=payload.new_schema_hash,
                 severity=severity,
+                severity_score=severity_score,
                 diff_summary_str=diff_json_str,
                 ai_analysis_str=analysis_text,
                 ai_patch_snippet=patch_snippet,
@@ -144,6 +146,7 @@ async def analyze_drift(
                 "old_schema_hash": payload.old_schema_hash,
                 "new_schema_hash": payload.new_schema_hash,
                 "severity": severity,
+                "severity_score": severity_score,
                 "diff_summary": diff_summary,
                 "ai_analysis": analysis_text,
                 "ai_patch_snippet": patch_snippet,

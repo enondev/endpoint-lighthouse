@@ -1,0 +1,21 @@
+{
+  "severity_level": {
+    "BREAKING": 40,
+    "WARNING": 30,
+    "NON_BREAKING": 20,
+    "PENDING": 10
+  },
+  "status": {
+    "OPEN": 20,
+    "ACKNOWLEDGED": 10,
+    "RESOLVED": 0
+  },
+  "field_change": 1,
+  "field_change_per_field": 2,
+  "field_change_max": 20,
+  "multipliers": {
+    "is_breaking": 1.5
+  },
+  "base_score": 0,
+  "max_score": 100
+}
