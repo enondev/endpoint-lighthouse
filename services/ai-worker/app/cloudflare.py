@@ -28,24 +28,24 @@ class CloudflareClient:
         strict_json: bool = True
     ) -> dict:
         system_prompt = (
-            "You are Endpoint Lighthouse AI, an expert API contract and schema reliability engineer. "
-            "Analyze the provided JSON DeepDiff output and respond ONLY with valid JSON. "
-            f"Do not include markdown fences or text outside the JSON object. Fit your response in {MAX_TOKENS} tokens"
-            "Required JSON format:\n"
-            "{\n"
+            "You are Endpoint Lighthouse AI, an API contract reliability engineer. "
+            "Respond ONLY with valid JSON, no markdown fences, no extra text. "
+            f"Total output must fit within {MAX_TOKENS} tokens. Be extremely concise.\n"
+            "Required shape:\n"
+            '{\n'
             '  "severity": "BREAKING" | "WARNING" | "NON_BREAKING",\n'
-            '  "analysis": "Concise 2-3 sentence summary of what changed and its downstream client impact.",\n'
-            '  "recommended_actions": [\n'
-            '    "1-2 short, plain-English action steps telling the user what to check, update, or mitigate (no code blocks or CLI commands)."\n'
-            '  ]\n'
-            "}"
+            '  "analysis": "One sentence, max 25 words, describing the change and client impact.",\n'
+            '  "patch_snippet": "One short plain-English action step (no code blocks, no CLI commands)."\n'
+            '}\n'
+            "Example:\n"
+            '{"severity":"WARNING","analysis":"Field status.indicator changed from string to integer.","patch_snippet":"Wrap status.indicator in String() before display."}'
         )
         body = {
             "messages": [
                 {"role": "system", "content": system_prompt},
                 {
                     "role": "user",
-                    "content": f"Endpoint: {endpoint_name} ({endpoint_url})\nStructured Diff:\n{diff_str}",
+                    "content": f"Endpoint: {endpoint_name} ({endpoint_url})\n<diff>{diff_str}</diff>",
                 },
             ],
             "temperature": 0.1,
@@ -152,9 +152,23 @@ class CloudflareClient:
                 "Check model availability, response_format support, and diff size."
             )
 
-        return self._parse_llm_json(raw_text)
+        return self._parse_llm_json(raw_text, diff_summary=diff_summary)
 
-    def _parse_llm_json(self, raw_text: str) -> dict[str, Any]:
+    def _fallback_patch_snippet(self, diff_summary: dict[str, Any] | None) -> str:
+        if not diff_summary:
+            return "// Review the schema diff and update client code accordingly."
+        keys = " | ".join(str(k) for k in diff_summary.keys()).lower()
+        if "removed" in keys:
+            return "// Check for references to removed fields and update client code accordingly."
+        if "added" in keys:
+            return "// Review new fields and update client schemas to include them."
+        if "changed" in keys or "type" in keys:
+            return "// Update client type definitions to match the new schema types."
+        return "// Review the schema diff and update client code accordingly."
+
+    def _parse_llm_json(
+        self, raw_text: str, diff_summary: dict[str, Any] | None = None
+    ) -> dict[str, Any]:
         """Safely parses LLM JSON output with deterministic fallback."""
         cleaned = raw_text.strip()
         start = cleaned.find("{")
@@ -167,24 +181,27 @@ class CloudflareClient:
             return {
                 "severity": "WARNING",
                 "analysis": "Automated drift analysis completed; LLM returned no usable output.",
-                "patch_snippet": "// Manual client schema update recommended based on diff_summary.",
+                "patch_snippet": self._fallback_patch_snippet(diff_summary),
             }
 
         try:
             parsed = json.loads(cleaned)
             raw_sev = str(parsed.get("severity", "WARNING")).upper().strip()
             severity = raw_sev if raw_sev in VALID_SEVERITIES else "WARNING"
+            patch_snippet = str(parsed.get("patch_snippet", "")).strip()
+            if not patch_snippet:
+                patch_snippet = self._fallback_patch_snippet(diff_summary)
             return {
                 "severity": severity,
                 "analysis": str(parsed.get("analysis", "Schema drift detected.")),
-                "patch_snippet": str(parsed.get("patch_snippet", "")),
+                "patch_snippet": patch_snippet,
             }
         except json.JSONDecodeError:
             logger.warning("Workers AI returned non-JSON output (len=%d): %r", len(raw_text), raw_text[:120])
             return {
                 "severity": "WARNING",
                 "analysis": raw_text[:500] if raw_text else "Automated drift analysis completed.",
-                "patch_snippet": "// Manual client schema update recommended based on diff_summary.",
+                "patch_snippet": self._fallback_patch_snippet(diff_summary),
             }
 
     async def update_d1_incident(

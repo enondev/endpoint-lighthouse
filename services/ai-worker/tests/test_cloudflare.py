@@ -45,7 +45,7 @@ def test_parse_llm_json_handles_non_json_fallback() -> None:
 
     assert result["severity"] == "WARNING"
     assert "Sorry, I cannot parse" in result["analysis"]
-    assert "Manual client schema update" in result["patch_snippet"]
+    assert "Review the schema diff" in result["patch_snippet"]
 
 
 @respx.mock
