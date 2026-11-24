@@ -39,7 +39,7 @@ func Load() Config {
 		CFAPIToken:            os.Getenv("CF_API_TOKEN"),
 		CFAccountID:           os.Getenv("CF_ACCOUNT_ID"),
 		CFD1DatabaseID:        os.Getenv("CF_D1_DATABASE_ID"),
-		ReconcilePeriod:       os.Getenv("RECONCILE_PERIOD", "7"),
+		ReconcilePeriod:       getEnv("RECONCILE_PERIOD", "7"),
 	}
 }
 
