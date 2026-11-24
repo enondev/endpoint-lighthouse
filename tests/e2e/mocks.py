@@ -53,24 +53,30 @@ def setup_offline_api_mocks(
     inc_data = MOCK_INCIDENTS if incidents is None else incidents
     stream_data = [] if sse_events is None else sse_events
 
+    cors_headers = {
+        "Access-Control-Allow-Origin": "*",
+        "Access-Control-Allow-Methods": "GET, OPTIONS",
+        "Access-Control-Allow-Headers": "Content-Type, Accept",
+    }
+
     def handle_endpoints(route: Route) -> None:
         if fail_endpoints:
             route.fulfill(
                 status=503,
-                content_type="application/json",
+                headers={**{"Content-Type": "application/json"}, **cors_headers},
                 body=json.dumps({"error": "Upstream D1 timeout"}),
             )
             return
         route.fulfill(
             status=200,
-            content_type="application/json",
+            headers={**{"Content-Type": "application/json"}, **cors_headers},
             body=json.dumps({"endpoints": ep_data, "data": ep_data}),
         )
 
     def handle_incidents(route: Route) -> None:
         route.fulfill(
             status=200,
-            content_type="application/json",
+            headers={**{"Content-Type": "application/json"}, **cors_headers},
             body=json.dumps({"incidents": inc_data, "data": inc_data}),
         )
 
@@ -78,9 +84,12 @@ def setup_offline_api_mocks(
         route.fulfill(
             status=200,
             headers={
-                "Content-Type": "text/event-stream",
-                "Cache-Control": "no-cache",
-                "Connection": "keep-alive",
+                **{
+                    "Content-Type": "text/event-stream",
+                    "Cache-Control": "no-cache",
+                    "Connection": "keep-alive",
+                },
+                **cors_headers,
             },
             body=format_sse_payload(stream_data),
         )

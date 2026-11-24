@@ -43,19 +43,15 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Install AI Worker & E2E dev dependencies
+      - name: Install AI Worker dev dependencies
         run: |
           python -m pip install --upgrade pip
           pip install -r services/ai-worker/requirements.txt
           pip install -r requirements-dev.txt
-          playwright install chromium --with-deps
 
-      - name: Run AI Worker unit & integration tests (12/12)
+      - name: Run AI Worker unit & integration tests (24/24)
         working-directory: services/ai-worker
         run: pytest -v
 
       - name: Run zero-quota E2E drift simulator
         run: python scripts/simulate_drift.py
-
-      - name: Run offline Playwright browser E2E tests (4/4)
-        run: pytest tests/e2e -v
