@@ -242,5 +242,11 @@
   </footer>
 
   <script src="./app.js" defer></script>
+
+  <!-- Cloudflare Web Analytics — token injected at deploy time via
+       CLOUDFLARE_WEB_ANALYTICS_TOKEN secret. Get your token from:
+       Cloudflare dashboard → Analytics & Logs → Web Analytics → Enable -->
+  <script defer src="https://static.cloudflareinsights.com/beacon.min.js"
+          data-cf-beacon='{"token": "__CF_WEBANALYTICS_TOKEN__"}'></script>
 </body>
 </html>

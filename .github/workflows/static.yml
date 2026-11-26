@@ -27,6 +27,9 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+      - name: Inject Cloudflare Web Analytics token
+        run: |
+          sed -i "s/__CF_WEBANALYTICS_TOKEN__/${{ secrets.CLOUDFLARE_WEB_ANALYTICS_TOKEN }}/g" frontend/index.html
       - name: Setup Pages
         uses: actions/configure-pages@v5
       - name: Upload artifact
