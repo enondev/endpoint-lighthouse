@@ -13,11 +13,13 @@ RUN groupadd -r specwatch && useradd -r -g specwatch specwatch
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY app/ ./app/
+COPY --chown=specwatch:specwatch app/ ./app/
 
-RUN chown -R specwatch:specwatch /app
 USER specwatch
 
 EXPOSE 8000
+
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
+    CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')" || exit 1
 
 CMD ["sh", "-c", "uvicorn app.main:app --host 0.0.0.0 --port ${PORT} --workers 1"]
