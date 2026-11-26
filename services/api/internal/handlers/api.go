@@ -144,7 +144,7 @@ func (h *APIHandler) HandleIncidents(w http.ResponseWriter, r *http.Request) {
 	whereSql := "WHERE 1=1"
 	args := []any{}
 
-	if statusFilter == "OPEN" || statusFilter == "ACKNOWLEDGED" || statusFilter == "RESOLVED" {
+	if statusFilter == "OPEN" || statusFilter == "ACKNOWLEDGED" || statusFilter == "RESOLVED" || statusFilter == "INCONCLUSIVE" {
 		whereSql += " AND di.status = ?"
 		args = append(args, statusFilter)
 	}
