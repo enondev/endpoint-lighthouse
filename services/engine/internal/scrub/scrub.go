@@ -109,7 +109,9 @@ func isTypeOnly(key string) bool {
 		return true
 	case key == "description" || key == "name" || key == "title" || key == "body" || key == "message":
 		return true
-	case strings.HasSuffix(key, "_count") || key == "total" || key == "size":
+	case key == "count" || key == "total" || key == "size":
+		return true
+	case strings.HasSuffix(key, "_count"):
 		return true
 	}
 	return false
