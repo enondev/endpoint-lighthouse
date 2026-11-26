@@ -19,7 +19,7 @@ def test_parse_llm_json_clean_valid_payload() -> None:
     )
 
     result = cf._parse_llm_json(raw)
-    assert result["severity"] == "BREAKING"
+    assert result["severity"] == "breaking"
     assert "description" in result["analysis"]
     assert "data.status" in result["patch_snippet"]
 
@@ -35,7 +35,7 @@ def test_parse_llm_json_strips_markdown_fences_and_normalizes_severity() -> None
     ```"""
 
     result = cf._parse_llm_json(raw)
-    assert result["severity"] == "WARNING"  # Unknown severity safely coerces to WARNING
+    assert result["severity"] == "cosmetic"  # Unknown severity safely coerces to cosmetic
     assert result["analysis"] == "Type changed from str to int."
 
 
@@ -43,7 +43,7 @@ def test_parse_llm_json_handles_non_json_fallback() -> None:
     cf = CloudflareClient()
     result = cf._parse_llm_json("Sorry, I cannot parse this schema right now.")
 
-    assert result["severity"] == "WARNING"
+    assert result["severity"] == "cosmetic"
     assert "Sorry, I cannot parse" in result["analysis"]
     assert "Review the schema diff" in result["patch_snippet"]
 
@@ -63,7 +63,7 @@ async def test_update_d1_incident_uses_hash_fallback_when_incident_id_none() -> 
             endpoint_id="ep-1",
             old_schema_hash="oldhash1234567890",
             new_schema_hash="newhash1234567890",
-            severity="BREAKING",
+            severity="breaking",
             diff_summary_str='{"fields_removed":["root[\'x\']"]}',
             ai_analysis_str="Removed x",
             ai_patch_snippet="// patch",
@@ -73,7 +73,7 @@ async def test_update_d1_incident_uses_hash_fallback_when_incident_id_none() -> 
     sent_body = json.loads(route.calls[0].request.content)
     assert "WHERE endpoint_id = ?" in sent_body["sql"]
     assert sent_body["params"] == [
-        "BREAKING",
+        "breaking",
         0,
         '{"fields_removed":["root[\'x\']"]}',
         "Removed x",

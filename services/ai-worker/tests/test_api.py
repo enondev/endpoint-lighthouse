@@ -104,7 +104,7 @@ def test_analyze_full_pipeline_success(
     body = resp.json()
     assert body["status"] == "analyzed"
     assert body["incident_id"] == 42
-    assert body["severity"] == "BREAKING"
+    assert body["severity"] == "breaking"
     assert isinstance(body["duration_ms"], int)
 
     # Verify D1 was updated by incident_id = 42
@@ -117,7 +117,7 @@ def test_analyze_full_pipeline_success(
     assert cb_route.called
     cb_payload = json.loads(cb_route.calls[0].request.content)
     assert cb_payload["incident_id"] == 42
-    assert cb_payload["severity"] == "BREAKING"
+    assert cb_payload["severity"] == "breaking"
     assert "ai_patch_snippet" in cb_payload
 
 
