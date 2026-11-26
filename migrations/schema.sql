@@ -55,21 +55,10 @@ CREATE TABLE IF NOT EXISTS drift_incidents (
     FOREIGN KEY (endpoint_id) REFERENCES endpoints(id) ON DELETE CASCADE
 );
 
--- Migration: add severity_score to existing drift_incidents tables
-ALTER TABLE drift_incidents ADD COLUMN severity_score INTEGER NOT NULL DEFAULT 0;
-
-CREATE INDEX IF NOT EXISTS idx_probe_runs_endpoint_time ON probe_runs(endpoint_id, probed_at DESC);
-CREATE INDEX IF NOT EXISTS idx_baselines_current ON schema_baselines(endpoint_id, is_current);
-CREATE INDEX IF NOT EXISTS idx_incidents_status ON drift_incidents(status, detected_at DESC);
-CREATE INDEX IF NOT EXISTS idx_incidents_severity_score ON drift_incidents(severity_score DESC, detected_at DESC);
-
--- ============================================================================
--- Contract drift tables (AGENTS.md engine)
--- Join key between spec and live is (source_id, method, path_template)
--- ============================================================================
--- Contract drift tables (AGENTS.md engine)
--- Join key between spec and live is (source_id, method, path_template)
--- ============================================================================
+-- drift_incidents.status now also allows 'INCONCLUSIVE' (in addition to
+-- 'OPEN', 'ACKNOWLEDGED', 'RESOLVED') for probe-failure outcomes.
+-- Enforced at application level; SQLite CHECK constraints cannot be altered
+-- on existing tables without recreation.
 
 -- Table: sources — vendor spec sources to monitor for contract drift
 CREATE TABLE IF NOT EXISTS sources (

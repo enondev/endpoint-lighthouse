@@ -90,6 +90,21 @@ func buildTestMux(env *testEnv, internalSecret string) http.Handler {
 		_, _ = fmt.Fprintf(w, `{"status":"reconciled","dispatched":%d}`, dispatched)
 	})
 
+	mux.HandleFunc("POST /internal/reconcile-all", func(w http.ResponseWriter, r *http.Request) {
+		if !validSecret(r.Header.Get("X-Internal-Secret"), internalSecret) {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		dispatched, err := reconcileAll(r.Context(), env.Handler, env.RDB, env.SnapDeploy.Server.URL, internalSecret, 50, env.Logger)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusAccepted)
+		_, _ = fmt.Fprintf(w, `{"status":"reconciled-all","dispatched":%d}`, dispatched)
+	})
+
 	return mux
 }
 
@@ -117,6 +132,7 @@ func TestInternalEndpointsAuthGuard(t *testing.T) {
 		"/internal/drift",
 		"/internal/analysis-completed",
 		"/internal/reconcile",
+		"/internal/reconcile-all",
 	}
 
 	for _, path := range routes {
@@ -269,6 +285,93 @@ func TestReconcilePendingConcurrentLocking(t *testing.T) {
 	reqs := env.SnapDeploy.WaitForRequests(t, 2, time.Second)
 	if len(reqs) != 2 {
 		t.Fatalf("expected exactly 2 dispatched incidents, got %d", len(reqs))
+	}
+}
+
+func TestReconcileAllDispatches(t *testing.T) {
+	env := setupTestEnv(t)
+	secret := "reconcile-all-secret"
+	srv := buildTestMux(env, secret)
+
+	env.D1.Handler = func(sql string, params []any) ([]map[string]any, int, error) {
+		return []map[string]any{
+			{
+				"incident_id":     float64(201),
+				"endpoint_id":     "ep-gamma",
+				"endpoint_name":   "Gamma API",
+				"endpoint_url":    "https://gamma.example.com",
+				"old_schema_hash": "g1",
+				"new_schema_hash": "g2",
+				"baseline_kv_key": "gk1",
+				"drifted_kv_key":  "gk2",
+			},
+			{
+				"incident_id":     float64(202),
+				"endpoint_id":     "ep-delta",
+				"endpoint_name":   "Delta API",
+				"endpoint_url":    "https://delta.example.com",
+				"old_schema_hash": "d1",
+				"new_schema_hash": "d2",
+				"baseline_kv_key": "dk1",
+				"drifted_kv_key":  "dk2",
+			},
+		}, http.StatusOK, nil
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/internal/reconcile-all", nil)
+	req.Header.Set("X-Internal-Secret", secret)
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("expected 202 Accepted, got %d (%s)", rec.Code, rec.Body.String())
+	}
+	if !bytes.Contains(rec.Body.Bytes(), []byte(`"reconciled-all"`)) {
+		t.Fatalf("expected reconciled-all status, got %s", rec.Body.String())
+	}
+
+	// With batchSize=5 and only 2 incidents, all should dispatch in one batch.
+	reqs := env.SnapDeploy.WaitForRequests(t, 2, time.Second)
+	if len(reqs) != 2 {
+		t.Fatalf("expected exactly 2 dispatched incidents, got %d", len(reqs))
+	}
+	for _, r := range reqs {
+		if r.Path != "/analyze" {
+			t.Errorf("unexpected path %s, expected /analyze", r.Path)
+		}
+		if r.Secret != secret {
+			t.Errorf("unexpected secret %s, expected %s", r.Secret, secret)
+		}
+	}
+}
+
+func TestReconcileAllEmpty(t *testing.T) {
+	env := setupTestEnv(t)
+	secret := "reconcile-all-empty-secret"
+	srv := buildTestMux(env, secret)
+
+	env.D1.Handler = func(sql string, params []any) ([]map[string]any, int, error) {
+		return []map[string]any{}, http.StatusOK, nil
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/internal/reconcile-all", nil)
+	req.Header.Set("X-Internal-Secret", secret)
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("expected 202 Accepted, got %d (%s)", rec.Code, rec.Body.String())
+	}
+	if !bytes.Contains(rec.Body.Bytes(), []byte(`"dispatched":0`)) {
+		t.Fatalf("expected dispatched:0 for empty incidents, got %s", rec.Body.String())
+	}
+
+	time.Sleep(300 * time.Millisecond)
+	env.SnapDeploy.mu.Lock()
+	got := len(env.SnapDeploy.Requests)
+	env.SnapDeploy.mu.Unlock()
+	if got != 0 {
+		t.Fatalf("expected no dispatches for empty incidents, got %d", got)
 	}
 }
 

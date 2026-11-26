@@ -8,7 +8,6 @@ import (
 	"encoding/binary"
 	"encoding/json"
 	"fmt"
-	"io"
 	"log/slog"
 	mrand "math/rand"
 	"net/http"
@@ -51,7 +50,7 @@ var (
 	healthCacheMu   sync.Mutex
 	healthCacheVal  string
 	healthCacheTime time.Time
-	healthCacheTTL  = 10 * time.Second
+	healthCacheTTL  = 60 * time.Second
 )
 
 func main() {
@@ -378,8 +377,10 @@ func requestIDFromCtx(ctx context.Context) string {
 }
 
 func validSecret(provided, expected string) bool {
+	// Fail closed: if the secret is not configured, reject all requests.
+	// Prevents accidental open access when INTERNAL_WEBHOOK_SECRET is unset.
 	if expected == "" {
-		return true
+		return false
 	}
 	return subtle.ConstantTimeCompare([]byte(provided), []byte(expected)) == 1
 }
@@ -540,7 +541,6 @@ func triggerSnapDeploy(logger *slog.Logger, ctx context.Context, workerURL, secr
 			observability.RecordSnapDeployAttempt("error")
 			continue
 		}
-		respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
 		resp.Body.Close()
 
 		if resp.StatusCode >= 200 && resp.StatusCode < 300 {
@@ -548,7 +548,7 @@ func triggerSnapDeploy(logger *slog.Logger, ctx context.Context, workerURL, secr
 			observability.RecordSnapDeployAttempt("success")
 			return
 		}
-		logger.Warn("snapdeploy attempt non-success", slog.Int("status", resp.StatusCode), slog.String("body", string(respBody)), slog.Int("attempt", attempt+1))
+		logger.Warn("snapdeploy attempt non-success", slog.Int("status", resp.StatusCode), slog.Int("attempt", attempt+1))
 		observability.RecordSnapDeployAttempt("error")
 		if resp.StatusCode < 500 && resp.StatusCode != http.StatusTooManyRequests {
 			return
