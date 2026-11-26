@@ -22,6 +22,14 @@ Compute plane that runs a stateless Docker container running a FastAPI backend f
 
 Data plane that polls externals endpoints, hashes response schema, writes snapshot to Cloudflare KV, records drift incidents in Cloudflare D1, and emits a webhook (`POST /internal/drift`) to `services/api`.
 
+**services/engine**
+
+Contract-drift plane (AGENTS.md engine). Runs a Go service implementing `fetch → gate → normalize → project → hash → diff → emit` against OpenAPI/Swagger spec sources. Detects structural contract drift (field removed, type narrowed, required added, enum removed, path removed) with severity classification (breaking/additive/cosmetic). Writes findings to Cloudflare D1 (`diffs`, `sources`, `operations`, `probes`, `observations`) and broadcasts via SSE. Runs alongside `services/api`/`services/probe`/`services/ai-worker` — extends, does not replace.
+
+**Adapter pattern**
+
+One engine, many adapters (AGENTS.md). `services/engine/internal/adapter/contractdrift` is the active adapter. `iprange` and `releasetracking` adapters are documented as out of scope per AGENTS.md scope rules (IP range feeds, release feeds, status pages, package registry metadata, static files are not contract sources).
+
 ## Testing & Verification
 
 All test suites run completely offline against local mocks.
@@ -41,3 +49,34 @@ python scripts/simulate_drift.py
 ```bash
 pytest tests/e2e -v
 ```
+
+## Schema & Commands
+
+D1 schema (tables + seed data) lives in `migrations/schema.sql` and `migrations/seeds.sql`. Apply locally or remotely via wrangler:
+
+```bash
+# Apply schema to local D1
+npx wrangler d1 execute endpoint-lighthouse --local --file=./migrations/schema.sql
+npx wrangler d1 execute endpoint-lighthouse --local --file=./migrations/seeds.sql
+
+# Inspect (always run SELECT COUNT(*) first before destructive --remote)
+npx wrangler d1 execute endpoint-lighthouse --remote --command="SELECT COUNT(*) FROM sources"
+npx wrangler d1 execute endpoint-lighthouse --remote --command="SELECT COUNT(*) FROM operations"
+npx wrangler d1 execute endpoint-lighthouse --remote --command="SELECT COUNT(*) FROM diffs"
+
+# Apply schema to remote D1 (only after confirming expected row counts above)
+npx wrangler d1 execute endpoint-lighthouse --remote --file=./migrations/schema.sql
+npx wrangler d1 execute endpoint-lighthouse --remote --file=./migrations/seeds.sql
+```
+
+Never run destructive statements against `--remote` without first running the equivalent `SELECT COUNT(*)` and confirming the expected row count.
+
+## Write Limits
+
+The engine is designed to stay within Cloudflare D1 daily write limits:
+- Observations are sampled (written only on state change or probe error, not every probe)
+- Diffs are batched per sweep cycle (default max 100 diffs per sweep)
+- Contract hash updates are batched per sweep cycle (default max 1000 per sweep)
+- Per-sweep write budgets are configurable via `WriteBudget`
+- The API `/health` endpoint uses a 10-second short-TTL cache to avoid hitting Redis/D1 on every platform check
+- The reconciliation sweeper uses jittered initial delay and ticker to prevent thundering herd across instances
