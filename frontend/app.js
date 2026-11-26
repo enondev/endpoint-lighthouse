@@ -224,6 +224,42 @@ function init() {
   connectSSE();
 }
 
+function showToast(message, type = "info") {
+  const container = document.getElementById("toast-container");
+  if (!container) return;
+
+  const toast = document.createElement("div");
+  toast.className = `toast ${type}`;
+
+  let iconHtml = "";
+  if (type === "success") {
+    iconHtml = "<svg width='18' height='18' viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2'><path d='M22 11.08V12a10 10 0 1 1-5.93-9.14'></path><polyline points='22 4 12 14.01 9 11.01'></polyline></svg>";
+  } else if (type === "error") {
+    iconHtml = "<svg width='18' height='18' viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2'><circle cx='12' cy='12' r='10'></circle><path d='M15 9l6 6M9 9l6 6'></path></svg>";
+  } else {
+    iconHtml = "<svg width='18' height='18' viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2'><circle cx='12' cy='12' r='10'></circle><path d='M12 16v-4'></path><path d='M12 8h.01'></path></svg>";
+  }
+
+  toast.innerHTML = `
+    <div class="toast-icon">${iconHtml}</div>
+    <div class="toast-message">${escapeHtml(message)}</div>
+  `;
+
+  container.appendChild(toast);
+
+  // Auto-remove after 3 seconds
+  setTimeout(() => {
+    toast.style.animation = "toastFadeOut 0.3s ease-in forwards";
+    setTimeout(() => toast.remove(), 300);
+  }, 3000);
+}
+
+function escapeHtml(text) {
+  const div = document.createElement("div");
+  div.textContent = text;
+  return div.innerHTML;
+}
+
 async function fetchJSON(path) {
   const res = await fetch(`${state.apiBase}${path}`, {
     headers: { Accept: "application/json" },
@@ -253,8 +289,28 @@ async function transitionIncident(newStatus) {
 
   const oldStatus = els.modalMetaStatus.textContent;
 
+  // Determine which button was clicked to disable it during request
+  const btnMap = {
+    ACKNOWLEDGED: els.btnAcknowledge,
+    RESOLVED: els.btnResolve,
+    OPEN: els.btnReopen,
+  };
+  const activeBtn = btnMap[newStatus];
+  if (activeBtn) {
+    activeBtn.disabled = true;
+    activeBtn.textContent = "Updating…";
+  }
+
   try {
     await patchIncidentStatus(incId, newStatus);
+
+    // Show toast on success
+    const statusLabels = {
+      ACKNOWLEDGED: "Acknowledged",
+      RESOLVED: "Resolved",
+      OPEN: "Reopened",
+    };
+    showToast(`Incident #${incId} ${statusLabels[newStatus] || newStatus}`, "success");
 
     // Update local state so the list reflects the change immediately
     const idx = state.incidents.findIndex((i) => String(i.id) === incId);
@@ -274,7 +330,18 @@ async function transitionIncident(newStatus) {
     // Close modal after a brief moment so user sees the change
     setTimeout(() => els.modal.close(), 800);
   } catch (err) {
-    alert("Failed to update status: " + err.message);
+    showToast(`Failed to update status: ${err.message}`, "error");
+  } finally {
+    // Re-enable button
+    if (activeBtn) {
+      activeBtn.disabled = false;
+      activeBtn.textContent =
+        activeBtn.id === "btn-acknowledge"
+          ? "Acknowledge"
+          : activeBtn.id === "btn-resolve"
+          ? "Resolve"
+          : "Reopen";
+    }
   }
 }
 
@@ -643,7 +710,88 @@ function openIncidentModal(inc) {
   }
   els.modalDiff.textContent = formattedDiff;
 
+  // Render visual diff tree from diff_summary
+  renderDiffTree(inc.diff_summary);
+
   els.modal.showModal();
+}
+
+function renderDiffTree(diffSummary) {
+  const container = document.getElementById("modal-diff-tree");
+  const countBadge = document.getElementById("modal-diff-change-count");
+
+  container.innerHTML = "";
+
+  let changes = [];
+  if (diffSummary) {
+    if (typeof diffSummary === "string") {
+      try {
+        changes = JSON.parse(diffSummary);
+      } catch {
+        changes = [];
+      }
+    } else if (Array.isArray(diffSummary)) {
+      changes = diffSummary;
+    }
+  }
+
+  if (changes.length === 0) {
+    countBadge.textContent = "0 changes";
+    countBadge.className = "badge";
+    container.innerHTML = '<div class="no-changes">No schema changes detected</div>';
+    return;
+  }
+
+  countBadge.textContent = `${changes.length} change${changes.length !== 1 ? "s" : ""}`;
+  countBadge.className = "badge change-count-badge";
+
+  // Group changes by top-level path for collapsible tree
+  const grouped = new Map();
+  const topLevel = [];
+
+  for (const change of changes) {
+    const path = change.path || "root";
+    const parts = path.split(".");
+    const topKey = parts[0] === "$" ? "root" : parts[0];
+
+    if (!grouped.has(topKey)) {
+      grouped.set(topKey, []);
+    }
+    grouped.get(topKey).push(change);
+
+    if (parts.length <= 2) {
+      topLevel.push(change);
+    }
+  }
+
+  for (const change of changes) {
+    const div = document.createElement("div");
+    div.className = `diff-change kind-${change.kind}`;
+
+    const kindBadge = document.createElement("span");
+    kindBadge.className = `diff-kind-badge kind-${change.kind}`;
+    kindBadge.textContent = change.kind;
+
+    const pathEl = document.createElement("span");
+    pathEl.className = "diff-path";
+    pathEl.textContent = change.path || "root";
+
+    const valuesEl = document.createElement("div");
+    valuesEl.className = "diff-values";
+
+    const specEl = document.createElement("span");
+    specEl.className = "diff-value spec";
+    specEl.textContent = change.spec_val !== undefined ? String(change.spec_val) : "—";
+
+    const liveEl = document.createElement("span");
+    liveEl.className = "diff-value live";
+    liveEl.textContent = change.live_val !== undefined ? String(change.live_val) : "—";
+
+    valuesEl.append(specEl, liveEl);
+
+    div.append(kindBadge, pathEl, valuesEl);
+    container.appendChild(div);
+  }
 }
 
 function connectSSE() {

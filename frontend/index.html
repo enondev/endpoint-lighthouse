@@ -229,6 +229,16 @@
         </div>
 
         <div class="detail-block">
+          <div class="block-header">
+            <h4>Visual Schema Diff</h4>
+            <span class="badge" id="modal-diff-change-count">0 changes</span>
+          </div>
+          <div class="diff-tree" id="modal-diff-tree">
+            <!-- Diff tree items rendered here -->
+          </div>
+        </div>
+
+        <div class="detail-block">
           <h4>Metadata</h4>
           <div class="meta-grid">
             <div class="meta-item"><span class="meta-label">Incident ID</span><span class="meta-value" id="modal-meta-id">—</span></div>
@@ -253,5 +263,8 @@
        Cloudflare dashboard → Analytics & Logs → Web Analytics → Enable -->
   <script defer src="https://static.cloudflareinsights.com/beacon.min.js"
           data-cf-beacon='{"token": "__CF_WEBANALYTICS_TOKEN__"}'></script>
+
+  <!-- Toast notification container -->
+  <div id="toast-container" class="toast-container" aria-live="polite" aria-label="Notifications"></div>
 </body>
 </html>
