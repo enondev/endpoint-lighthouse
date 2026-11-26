@@ -33,6 +33,7 @@ __pycache__
 # ==========================================
 *.log
 *.sql
+!migrations/*.sql
 *.sqlite
 *.db
 
