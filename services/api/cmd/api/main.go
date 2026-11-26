@@ -134,10 +134,10 @@ func main() {
 	}))))
 
 	// Public REST & SSE Endpoints
-	mux.Handle("GET /api/v1/status", withCORS(cfg.AllowedOrigin, withRequestID(logger, observability.Handler("/api/v1/status", http.HandlerFunc(apiHandler.HandleStatus)))))
-	mux.Handle("GET /api/v1/endpoints", withCORS(cfg.AllowedOrigin, withRequestID(logger, observability.Handler("/api/v1/endpoints", http.HandlerFunc(apiHandler.HandleEndpoints)))))
-	mux.Handle("GET /api/v1/incidents", withCORS(cfg.AllowedOrigin, withRequestID(logger, observability.Handler("/api/v1/incidents", http.HandlerFunc(apiHandler.HandleIncidents)))))
-	mux.Handle("GET /api/v1/incidents/{id}", withCORS(cfg.AllowedOrigin, withRequestID(logger, observability.Handler("/api/v1/incidents/{id}", http.HandlerFunc(apiHandler.HandleIncidentByID)))))
+	mux.Handle("GET /api/v1/status", withCORS(cfg.AllowedOrigin, withRequestID(logger, observability.Handler("/api/v1/status", apiRateLimitMiddleware(http.HandlerFunc(apiHandler.HandleStatus))))))
+	mux.Handle("GET /api/v1/endpoints", withCORS(cfg.AllowedOrigin, withRequestID(logger, observability.Handler("/api/v1/endpoints", apiRateLimitMiddleware(http.HandlerFunc(apiHandler.HandleEndpoints))))))
+	mux.Handle("GET /api/v1/incidents", withCORS(cfg.AllowedOrigin, withRequestID(logger, observability.Handler("/api/v1/incidents", apiRateLimitMiddleware(http.HandlerFunc(apiHandler.HandleIncidents))))))
+	mux.Handle("GET /api/v1/incidents/{id}", withCORS(cfg.AllowedOrigin, withRequestID(logger, observability.Handler("/api/v1/incidents/{id}", apiRateLimitMiddleware(http.HandlerFunc(apiHandler.HandleIncidentByID))))))
 	mux.Handle("GET /api/v1/stream", withCORS(cfg.AllowedOrigin, withRequestID(logger, hub)))
 
 	// Internal Webhook: Drift Detected (from probe)
@@ -384,6 +384,50 @@ func validSecret(provided, expected string) bool {
 		return false
 	}
 	return subtle.ConstantTimeCompare([]byte(provided), []byte(expected)) == 1
+}
+
+// apiRateLimit is an in-memory rate limiter for public API endpoints.
+// Allows 60 requests per minute per client IP.
+var (
+	apiRateLimitMu   sync.Mutex
+	apiRateLimitHits = make(map[string][]time.Time)
+)
+
+func apiRateLimitAllowed(clientIP string) bool {
+	now := time.Now()
+	apiRateLimitMu.Lock()
+	defer apiRateLimitMu.Unlock()
+	timestamps := apiRateLimitHits[clientIP]
+	// Prune entries outside the 1-minute window
+	pruned := timestamps[:0]
+	for _, t := range timestamps {
+		if now.Sub(t) < time.Minute {
+			pruned = append(pruned, t)
+		}
+	}
+	timestamps = pruned
+	if len(timestamps) >= 60 {
+		apiRateLimitHits[clientIP] = timestamps
+		return false
+	}
+	timestamps = append(timestamps, now)
+	apiRateLimitHits[clientIP] = timestamps
+	return true
+}
+
+// apiRateLimitMiddleware wraps a handler with IP-based rate limiting.
+func apiRateLimitMiddleware(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		identifier := r.RemoteAddr
+		if forwarded := r.Header.Get("X-Forwarded-For"); forwarded != "" {
+			identifier = forwarded
+		}
+		if !apiRateLimitAllowed(identifier) {
+			http.Error(w, "rate limit exceeded", http.StatusTooManyRequests)
+			return
+		}
+		next.ServeHTTP(w, r)
+	}
 }
 
 // warmUpWorker pings the ai-worker /health endpoint to keep the container warm
