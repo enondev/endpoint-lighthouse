@@ -14,6 +14,9 @@ import (
 	"sync/atomic"
 	"time"
 
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/propagation"
+
 	"github.com/enondev/endpoint-lighthouse-probe/internal/cloudflare"
 	"github.com/enondev/endpoint-lighthouse-probe/internal/config"
 	"github.com/enondev/endpoint-lighthouse-probe/internal/schema"
@@ -39,6 +42,7 @@ type Runner struct {
 	lastModified  map[string]string
 	baselineCache map[string]*schema.Node
 	baselineHash  map[string]string
+	endpoints     map[string]cloudflare.Endpoint // indexed by endpoint ID for on-demand re-probe
 }
 
 var bufPool = sync.Pool{
@@ -112,6 +116,14 @@ func (r *Runner) Start(ctx context.Context) {
 
 	r.Metrics.ActiveEndpoints.Store(int64(len(endpoints)))
 	slog.Info("starting probe workers", "endpoint_count", len(endpoints))
+
+	// Index endpoints by ID for on-demand re-probe
+	r.mu.Lock()
+	r.endpoints = make(map[string]cloudflare.Endpoint, len(endpoints))
+	for _, ep := range endpoints {
+		r.endpoints[ep.ID] = ep
+	}
+	r.mu.Unlock()
 
 	// Hydrate in-memory cache directly from D1 (zero extra KV round-trips on startup)
 	for _, ep := range endpoints {
@@ -463,12 +475,27 @@ func (r *Runner) postWebhook(ctx context.Context, targetURL string, body []byte)
 	if r.cfg.InternalWebhookSecret != "" {
 		req.Header.Set("X-Internal-Secret", r.cfg.InternalWebhookSecret)
 	}
+	// Inject W3C TraceContext for distributed tracing across service boundaries
+	otel.GetTextMapPropagator().Inject(ctx, propagation.HeaderCarrier(req.Header))
 	resp, err := r.httpClient.Do(req)
 	if err != nil {
 		slog.Warn("webhook dispatch failed", "url", targetURL, "err", err)
 		return
 	}
 	resp.Body.Close()
+}
+
+// Reprobe triggers an immediate probe of the given endpoint, bypassing the
+// poll interval. Returns true if the endpoint was found and re-probed.
+func (r *Runner) Reprobe(ctx context.Context, endpointID string) bool {
+	r.mu.RLock()
+	ep, ok := r.endpoints[endpointID]
+	r.mu.RUnlock()
+	if !ok {
+		return false
+	}
+	r.probeOnce(ctx, ep)
+	return true
 }
 
 func (r *Runner) keepRenderWarm(ctx context.Context) {

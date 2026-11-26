@@ -15,6 +15,9 @@ import (
 	"sync"
 	"time"
 
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/propagation"
+
 	"github.com/enondev/endpoint-lighthouse-api/internal/cloudflare"
 	"github.com/enondev/endpoint-lighthouse-api/internal/config"
 	"github.com/enondev/endpoint-lighthouse-api/internal/handlers"
@@ -138,11 +141,14 @@ func main() {
 	mux.Handle("GET /api/v1/endpoints", withCORS(cfg.AllowedOrigin, withRequestID(logger, observability.Handler("/api/v1/endpoints", apiRateLimitMiddleware(http.HandlerFunc(apiHandler.HandleEndpoints))))))
 	mux.Handle("GET /api/v1/incidents", withCORS(cfg.AllowedOrigin, withRequestID(logger, observability.Handler("/api/v1/incidents", apiRateLimitMiddleware(http.HandlerFunc(apiHandler.HandleIncidents))))))
 	mux.Handle("GET /api/v1/incidents/{id}", withCORS(cfg.AllowedOrigin, withRequestID(logger, observability.Handler("/api/v1/incidents/{id}", apiRateLimitMiddleware(http.HandlerFunc(apiHandler.HandleIncidentByID))))))
+	mux.Handle("PATCH /api/v1/incidents/{id}/status", withCORS(cfg.AllowedOrigin, withRequestID(logger, observability.Handler("/api/v1/incidents/{id}/status", apiRateLimitMiddleware(http.HandlerFunc(apiHandler.HandleIncidentStatusUpdate))))))
 	mux.Handle("GET /api/v1/stream", withCORS(cfg.AllowedOrigin, withRequestID(logger, hub)))
 
 	// Internal Webhook: Drift Detected (from probe)
 	mux.Handle("POST /internal/drift", withRequestID(logger, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		ctx := r.Context()
+		// Extract W3C TraceContext from incoming webhook for distributed tracing
+		ctx = otel.GetTextMapPropagator().Extract(ctx, propagation.HeaderCarrier(r.Header))
 		logger := logger.With(append(observability.WithTrace(ctx), slog.String("handler", "drift"))...)
 
 		if !validSecret(r.Header.Get("X-Internal-Secret"), cfg.InternalWebhookSecret) {
@@ -205,6 +211,8 @@ func main() {
 	// Internal Webhook: AI Analysis Complete (from ai-worker)
 	mux.Handle("POST /internal/analysis-completed", withRequestID(logger, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		ctx := r.Context()
+		// Extract W3C TraceContext from incoming callback
+		ctx = otel.GetTextMapPropagator().Extract(ctx, propagation.HeaderCarrier(r.Header))
 		logger := logger.With(append(observability.WithTrace(ctx), slog.String("handler", "analysis-completed"))...)
 
 		if !validSecret(r.Header.Get("X-Internal-Secret"), cfg.InternalWebhookSecret) {

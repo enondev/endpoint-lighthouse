@@ -31,6 +31,7 @@ from app.observability import (
     metrics_endpoint,
     set_request_id,
 )
+from opentelemetry import propagate
 
 init_logging(level=settings.log_level, json_logs=(settings.environment.lower() == "production"))
 init_tracing(service_name=settings.otel_service_name)
@@ -195,13 +196,15 @@ async def analyze_drift(
 
     request_id = generate_request_id()
     set_request_id(request_id)
+    # Extract W3C TraceContext from incoming request for distributed tracing
+    trace_ctx = propagate.extract(dict(request.headers))
     try:
-        return await _run_analysis(payload, request_id)
+        return await _run_analysis(payload, request_id, trace_ctx)
     finally:
         clear_request_id()
 
 
-async def _run_analysis(payload: AnalyzeRequest, request_id: str) -> AnalyzeResponse:
+async def _run_analysis(payload: AnalyzeRequest, request_id: str, trace_ctx=None) -> AnalyzeResponse:
     start_time = time.perf_counter()
 
     old_kv_key = payload.baseline_kv_key or f"snap:{payload.endpoint_id}:{payload.old_schema_hash[:16]}"
@@ -319,12 +322,18 @@ async def _run_analysis(payload: AnalyzeRequest, request_id: str) -> AnalyzeResp
             }
             cb_start = time.perf_counter()
             try:
+                # Inject trace context into callback headers for distributed tracing
+                callback_headers = {
+                    "Content-Type": "application/json",
+                    "X-Internal-Secret": settings.internal_webhook_secret,
+                }
+                if trace_ctx is not None:
+                    carrier: dict[str, str] = {}
+                    propagate.inject(carrier, context=trace_ctx)
+                    callback_headers.update(carrier)
                 cb_resp = await client.post(
                     callback_url,
-                    headers={
-                        "X-Internal-Secret": settings.internal_webhook_secret,
-                        "Content-Type": "application/json",
-                    },
+                    headers=callback_headers,
                     json=callback_payload,
                 )
                 cb_resp.raise_for_status()
