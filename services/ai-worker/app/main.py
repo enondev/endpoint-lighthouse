@@ -3,10 +3,12 @@ import json
 import logging
 import socket
 import time
+from collections import defaultdict
+from threading import Lock
 from typing import Any
 
 import httpx
-from fastapi import FastAPI, Header, HTTPException, status
+from fastapi import FastAPI, Header, HTTPException, Request, status
 from pydantic import BaseModel, Field
 
 from app.cloudflare import CloudflareClient
@@ -33,6 +35,31 @@ from app.observability import (
 init_logging(level=settings.log_level, json_logs=(settings.environment.lower() == "production"))
 init_tracing(service_name=settings.otel_service_name)
 logger = get_logger("endpoint_lighthouse.ai_worker")
+
+# Health cache (60s TTL) to avoid hitting Cloudflare on every platform check
+_health_cache: dict[str, Any] = {}
+_health_cache_lock = Lock()
+_HEALTH_CACHE_TTL = 60.0
+
+# Rate limiter for /analyze: 10 requests per minute per client IP
+_rate_limit_cache: dict[str, list[float]] = {}
+_rate_limit_lock = Lock()
+_RATE_LIMIT_MAX = 10
+_RATE_LIMIT_WINDOW = 60.0
+
+
+def _rate_limit_allowed(client_ip: str) -> bool:
+    now = time.time()
+    with _rate_limit_lock:
+        timestamps = _rate_limit_cache.get(client_ip, [])
+        # Prune entries outside the window
+        timestamps = [t for t in timestamps if now - t < _RATE_LIMIT_WINDOW]
+        if len(timestamps) >= _RATE_LIMIT_MAX:
+            _rate_limit_cache[client_ip] = timestamps
+            return False
+        timestamps.append(now)
+        _rate_limit_cache[client_ip] = timestamps
+        return True
 
 app = FastAPI(
     title="Endpoint Lighthouse AI Analysis Worker",
@@ -116,6 +143,13 @@ async def resolve_cloudflare_ip() -> str | None:
 @app.get("/health")
 async def health() -> dict[str, Any]:
     """Health endpoint with dependency probes for D1, KV, and Workers AI."""
+    now = time.time()
+    with _health_cache_lock:
+        cached = _health_cache.get("payload")
+        cached_at = _health_cache.get("cached_at", 0.0)
+        if cached is not None and now - cached_at < _HEALTH_CACHE_TTL:
+            return cached
+
     details: dict[str, Any] = {"service": "ai-worker"}
     status = "ok"
 
@@ -129,12 +163,17 @@ async def health() -> dict[str, Any]:
             details["cloudflare_api"] = "ok" if resp.status_code < 400 else "degraded"
             if resp.status_code >= 400:
                 status = "degraded"
-    except Exception as exc:  # pragma: no cover - probe only
-        details["cloudflare_api"] = f"unreachable: {exc}"
+    except Exception:  # pragma: no cover - probe only
+        details["cloudflare_api"] = "unreachable"
         status = "degraded"
 
     details["version"] = "1.0.0"
     details["status"] = status
+
+    with _health_cache_lock:
+        _health_cache["payload"] = details
+        _health_cache["cached_at"] = time.time()
+
     return details
 
 
@@ -142,7 +181,16 @@ async def health() -> dict[str, Any]:
 async def analyze_drift(
     payload: AnalyzeRequest,
     x_internal_secret: str | None = Header(default=None),
+    request: Request = None,
 ) -> AnalyzeResponse:
+    # Rate limit: 10 requests per minute per client IP
+    client_ip = request.client.host if request.client else "unknown"
+    if not _rate_limit_allowed(client_ip):
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail="Rate limit exceeded",
+        )
+
     verify_internal_secret(x_internal_secret)
 
     request_id = generate_request_id()
