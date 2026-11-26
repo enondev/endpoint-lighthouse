@@ -1,0 +1,23 @@
+-- Migration 003: Add INCONCLUSIVE status support for drift_incidents
+--
+-- The drift_incidents.status column originally supported:
+--   OPEN, ACKNOWLEDGED, RESOLVED
+--
+-- This migration adds INCONCLUSIVE as a valid status value for probe
+-- failure outcomes (platforms that are unreachable, timing out, or
+-- returning 5xx cannot be assessed for drift).
+--
+-- SQLite does not support ALTER TABLE ... ADD CONSTRAINT, so the
+-- status column accepts any TEXT value. The INCONCLUSIVE value is
+-- enforced at the application level:
+--
+--   api/cmd/api/main.go   - HandleIncidentStatusUpdate validates transitions
+--   services/probe        - records incidents as INCONCLUSIVE on probe failure
+--
+-- No data migration is needed; the column already accepts any TEXT value.
+-- This migration documents the intent and serves as a marker for the
+-- versioned schema history.
+
+-- No-op: INCONCLUSIVE is already a valid TEXT value in the status column.
+-- This migration exists to document the schema evolution.
+SELECT 'Migration 003: INCONCLUSIVE status supported at application level' AS msg;

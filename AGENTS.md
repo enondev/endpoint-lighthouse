@@ -35,6 +35,21 @@ probe ──POST /internal/drift──► api ──POST /analyze──► ai-wo
 - `probe_runs` — per-probe observation records
 - Cloudflare KV — snapshot storage keyed by `snap:<endpoint_id>:<hash_prefix>`
 
+### Database migrations
+
+Schema changes are managed via versioned migration files in `migrations/`:
+
+| File | Description |
+|------|-------------|
+| `001_initial_schema.sql` | Core tables: `endpoints`, `schema_baselines`, `probe_runs`, `drift_incidents` |
+| `002_contract_drift_tables.sql` | Contract drift tables: `sources`, `operations`, `probes`, `observations`, `diffs` |
+| `003_add_inconclusive_status.sql` | Documents `INCONCLUSIVE` status for `drift_incidents` (app-level enforcement) |
+| `schema.sql` | Legacy combined schema (kept for reference) |
+| `seeds.sql` | Seed data for endpoints and sources |
+| `old.sql` / `seed_discovered.sql` | Legacy migration files |
+
+Apply migrations in order (001 → 002 → 003). SQLite does not support `ALTER TABLE ... ADD CONSTRAINT`, so the `drift_incidents.status` column accepts any `TEXT` value; new status values (e.g., `INCONCLUSIVE`) are enforced at the application level.
+
 ### Testing (offline against local mocks)
 
 - AI Worker: `cd services/ai-worker && pytest -v` (29 tests)
