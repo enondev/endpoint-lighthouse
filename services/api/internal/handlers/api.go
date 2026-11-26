@@ -258,6 +258,58 @@ func (h *APIHandler) FetchPendingIncidents(ctx context.Context, limit int) ([]Pe
 	return out, nil
 }
 
+// FetchAllOpenIncidents retrieves every OPEN drift incident regardless of
+// ai_analysis state, used for one-time migration to the new analysis prompt.
+// Both KV snapshot keys must be present so the worker can diff baseline vs drifted.
+func (h *APIHandler) FetchAllOpenIncidents(ctx context.Context, limit int) ([]PendingIncident, error) {
+	logger := h.logger.With(append(observability.WithTrace(ctx), slog.String("handler", "fetch_all_open_incidents"))...)
+
+	if limit <= 0 || limit > 100 {
+		limit = 50
+	}
+	sql := `
+		SELECT
+			di.id AS incident_id,
+			di.endpoint_id AS endpoint_id,
+			COALESCE(e.name, di.endpoint_id) AS endpoint_name,
+			COALESCE(e.url, '') AS endpoint_url,
+			di.old_schema_hash AS old_schema_hash,
+			di.new_schema_hash AS new_schema_hash,
+			sb_old.kv_snapshot_key AS baseline_kv_key,
+			sb_new.kv_snapshot_key AS drifted_kv_key
+		FROM drift_incidents di
+		LEFT JOIN endpoints e ON e.id = di.endpoint_id
+		LEFT JOIN schema_baselines sb_old
+			ON sb_old.endpoint_id = di.endpoint_id AND sb_old.schema_hash = di.old_schema_hash
+		LEFT JOIN schema_baselines sb_new
+			ON sb_new.endpoint_id = di.endpoint_id AND sb_new.schema_hash = di.new_schema_hash
+		WHERE di.status = 'OPEN'
+		  AND sb_old.kv_snapshot_key IS NOT NULL
+		  AND sb_new.kv_snapshot_key IS NOT NULL
+		ORDER BY di.detected_at DESC
+		LIMIT ?;
+	`
+	start := time.Now()
+	rows, err := h.d1.Query(ctx, sql, limit)
+	duration := time.Since(start)
+	if err != nil {
+		logger.Error("fetch all open incidents d1 query failed", slog.String("error", err.Error()), slog.Duration("duration", duration))
+		return nil, fmt.Errorf("query all open incidents: %w", err)
+	}
+
+	logger.Info("fetched all open incidents", slog.Int("count", len(rows)), slog.Duration("duration", duration))
+
+	var out []PendingIncident
+	raw, err := json.Marshal(rows)
+	if err != nil {
+		return nil, fmt.Errorf("marshal all open rows: %w", err)
+	}
+	if err := json.Unmarshal(raw, &out); err != nil {
+		return nil, fmt.Errorf("unmarshal all open incidents: %w", err)
+	}
+	return out, nil
+}
+
 // HandleAnalysisComplete receives a webhook from SnapDeploy (ai-worker-py)
 // after it updates severity, diff_summary, ai_analysis, and ai_patch_snippet in drift_incidents.
 func (h *APIHandler) HandleAnalysisComplete(w http.ResponseWriter, r *http.Request) {

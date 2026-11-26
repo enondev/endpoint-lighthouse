@@ -208,6 +208,32 @@ func main() {
 		_, _ = fmt.Fprintf(w, `{"status":"reconciled","dispatched":%d}`, dispatched)
 	})))
 
+	// Internal Admin Endpoint: One-time migration to re-analyze ALL open
+	// incidents with the current prompt (bypasses the ai_analysis filter).
+	// Gated by INTERNAL_WEBHOOK_SECRET. Dispatches in bounded batches with a
+	// per-incident 30-minute Redis lock so repeated calls won't double-dispatch
+	// until the ai-worker callback updates ai_analysis.
+	mux.Handle("POST /internal/reconcile-all", withRequestID(logger, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		ctx := r.Context()
+		logger := logger.With(append(observability.WithTrace(ctx), slog.String("handler", "reconcile-all"))...)
+
+		if !validSecret(r.Header.Get("X-Internal-Secret"), cfg.InternalWebhookSecret) {
+			logger.Warn("reconcile-all unauthorized")
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		dispatched, err := reconcileAll(ctx, apiHandler, rdb, cfg.SnapDeployWorkerURL, cfg.InternalWebhookSecret, 50, logger)
+		if err != nil {
+			logger.Error("reconcile-all failed", slog.String("error", err.Error()))
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		logger.Info("reconcile-all complete", slog.Int("dispatched", dispatched))
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusAccepted)
+		_, _ = fmt.Fprintf(w, `{"status":"reconciled-all","dispatched":%d}`, dispatched)
+	})))
+
 	srv := &http.Server{
 		Addr:              ":" + cfg.Port,
 		Handler:           mux,
@@ -385,6 +411,72 @@ func reconcilePending(
 		// dispatches issued, not completions confirmed.
 		go triggerSnapDeploy(logger, ctx, workerURL, secret, body)
 		dispatched++
+	}
+	return dispatched, nil
+}
+
+// reconcileAll dispatches every OPEN incident (regardless of ai_analysis state)
+// for one-time migration to the current analysis prompt. Dispatches are
+// throttled in bounded batches with a delay between each batch to avoid
+// overloading the ai-worker or exhausting daily LLM quota. Uses a 30-minute
+// per-incident Redis lock so repeated calls won't double-dispatch until the
+// ai-worker callback updates ai_analysis and the incident drops out of OPEN.
+func reconcileAll(
+	ctx context.Context,
+	h *handlers.APIHandler,
+	rdb *redis.Client,
+	workerURL string,
+	secret string,
+	limit int,
+	logger *slog.Logger,
+) (int, error) {
+	if workerURL == "" {
+		return 0, nil
+	}
+	const batchSize = 5
+	const batchDelay = 30 * time.Second
+
+	pending, err := h.FetchAllOpenIncidents(ctx, limit)
+	if err != nil {
+		return 0, err
+	}
+	if len(pending) == 0 {
+		return 0, nil
+	}
+
+	dispatched := 0
+	for i := 0; i < len(pending); i += batchSize {
+		end := i + batchSize
+		if end > len(pending) {
+			end = len(pending)
+		}
+		batch := pending[i:end]
+
+		for _, inc := range batch {
+			lockKey := fmt.Sprintf("reconcile-all:incident:%d", inc.IncidentID)
+			acquired, lockErr := rdb.AcquireCooldown(ctx, lockKey, 30*time.Minute)
+			if lockErr != nil {
+				logger.Warn("redis reconcile-all lock failed (failing open)", slog.String("error", lockErr.Error()))
+				acquired = true
+			}
+			if !acquired {
+				continue
+			}
+			body, err := json.Marshal(inc)
+			if err != nil {
+				continue
+			}
+			go triggerSnapDeploy(logger, ctx, workerURL, secret, body)
+			dispatched++
+		}
+
+		if end < len(pending) {
+			select {
+			case <-ctx.Done():
+				return dispatched, nil
+			case <-time.After(batchDelay):
+			}
+		}
 	}
 	return dispatched, nil
 }
