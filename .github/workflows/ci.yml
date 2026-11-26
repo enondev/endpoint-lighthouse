@@ -49,7 +49,7 @@ jobs:
           pip install -r services/ai-worker/requirements.txt
           pip install -r requirements-dev.txt
 
-      - name: Run AI Worker unit & integration tests (24/24)
+      - name: Run AI Worker unit & integration tests (29/29)
         working-directory: services/ai-worker
         run: pytest -v
 

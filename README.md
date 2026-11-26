@@ -26,7 +26,7 @@ Data plane that polls externals endpoints, hashes response schema, writes snapsh
 
 All test suites run completely offline against local mocks.
 
-**AI Worker Unit & Integration Tests (`12/12` passing):**
+**AI Worker Unit & Integration Tests (`29/29` passing):**
 ```bash
 cd services/ai-worker
 pytest -v
@@ -37,7 +37,7 @@ pytest -v
 python scripts/simulate_drift.py
 ```
 
-**Offline Playwright Browser E2E Suite (`4/4` passing):**
+**Offline Playwright Browser E2E Suite:**
 ```bash
 pytest tests/e2e -v
 ```
