@@ -452,9 +452,6 @@ func (r *Runner) notifyDrift(ctx context.Context, ep cloudflare.Endpoint, baseHa
 	if r.cfg.RenderAPIURL != "" {
 		r.postWebhook(ctx, strings.TrimRight(r.cfg.RenderAPIURL, "/")+"/internal/drift", raw)
 	}
-	if r.cfg.AIWorkerURL != "" {
-		r.postWebhook(ctx, strings.TrimRight(r.cfg.AIWorkerURL, "/")+"/analyze", raw)
-	}
 }
 
 func (r *Runner) postWebhook(ctx context.Context, targetURL string, body []byte) {
@@ -463,8 +460,8 @@ func (r *Runner) postWebhook(ctx context.Context, targetURL string, body []byte)
 		return
 	}
 	req.Header.Set("Content-Type", "application/json")
-	if r.cfg.AIWorkerSecret != "" {
-		req.Header.Set("X-EndpointLighthouse-Secret", r.cfg.AIWorkerSecret)
+	if r.cfg.InternalWebhookSecret != "" {
+		req.Header.Set("X-Internal-Secret", r.cfg.InternalWebhookSecret)
 	}
 	resp, err := r.httpClient.Do(req)
 	if err != nil {
