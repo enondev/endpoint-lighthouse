@@ -10,8 +10,10 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	mrand "math/rand"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/enondev/endpoint-lighthouse-api/internal/cloudflare"
@@ -42,6 +44,14 @@ var (
 	// 15 min, so a warmed-up dispatch may still need several retries while the
 	// ai-worker container boots. Total wait before giving up is ~50s plus per-request time.
 	snapDeployBackoffs = []time.Duration{0, 5 * time.Second, 10 * time.Second, 15 * time.Second, 20 * time.Second}
+
+	// healthCache caches /health check results to avoid hitting Redis/D1 on every
+	// platform health check (which can fire every ~30s). TTL is short to keep
+	// failure detection fast while reducing redundant dependency probes.
+	healthCacheMu   sync.Mutex
+	healthCacheVal  string
+	healthCacheTime time.Time
+	healthCacheTTL  = 10 * time.Second
 )
 
 func main() {
@@ -73,8 +83,20 @@ func main() {
 	// Metrics endpoint (instrumented separately so it doesn't count itself)
 	mux.Handle("GET /metrics", observability.MetricsHandler())
 
-	// Health & Keep-Alive (with dependency probes)
+	// Health & Keep-Alive (with dependency probes + short-TTL cache to avoid
+	// blasting Redis/D1 on every platform health check)
 	mux.Handle("GET /health", withRequestID(logger, observability.Handler("/health", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Return cached result if within TTL
+		healthCacheMu.Lock()
+		if time.Since(healthCacheTime) < healthCacheTTL && healthCacheVal != "" {
+			cached := healthCacheVal
+			healthCacheMu.Unlock()
+			w.Header().Set("Content-Type", "application/json")
+			w.Write([]byte(cached))
+			return
+		}
+		healthCacheMu.Unlock()
+
 		ctx, cancel := context.WithTimeout(r.Context(), 3*time.Second)
 		defer cancel()
 
@@ -97,11 +119,19 @@ func main() {
 			details["d1"] = "ok"
 		}
 
+		body, _ := json.Marshal(map[string]any{"status": status, "details": details})
+
+		// Cache the result
+		healthCacheMu.Lock()
+		healthCacheVal = string(body)
+		healthCacheTime = time.Now()
+		healthCacheMu.Unlock()
+
 		w.Header().Set("Content-Type", "application/json")
 		if status != "ok" {
 			w.WriteHeader(http.StatusServiceUnavailable)
 		}
-		_ = json.NewEncoder(w).Encode(map[string]any{"status": status, "details": details})
+		w.Write(body)
 	}))))
 
 	// Public REST & SSE Endpoints
@@ -247,7 +277,10 @@ func main() {
 	// any open/backlogged incidents awaiting AI analysis.
 	if cfg.SnapDeployWorkerURL != "" {
 		go func() {
-			time.Sleep(15 * time.Second)
+			// Add jitter to initial delay and ticker to prevent thundering herd
+			// across multiple api instances.
+			jitter := time.Duration(mrand.Int63n(int64(30 * time.Second)))
+			time.Sleep(15*time.Second + jitter)
 			runSweep := func() {
 				// Keep the worker warm even when idle (prevents ~15 min spin-down).
 				warmUpWorker(logger, cfg.SnapDeployWorkerURL)
@@ -274,7 +307,9 @@ func main() {
 				}
 			}
 			runSweep()
-			ticker := time.NewTicker(cfg.ReconcilePeriod)
+			// Add per-tick jitter so instances don't fire in lockstep.
+			tickerJitter := time.Duration(mrand.Int63n(int64(10 * time.Second)))
+			ticker := time.NewTicker(cfg.ReconcilePeriod + tickerJitter)
 			defer ticker.Stop()
 			for range ticker.C {
 				runSweep()
