@@ -312,7 +312,8 @@ class CloudflareClient:
                     severity_score = ?,
                     diff_summary = ?,
                     ai_analysis = ?,
-                    ai_patch_snippet = ?
+                    ai_patch_snippet = ?,
+                    status = 'ANALYZED'
                 WHERE id = ?;
             """
             params: list[Any] = [
@@ -330,7 +331,8 @@ class CloudflareClient:
                     severity_score = ?,
                     diff_summary = ?,
                     ai_analysis = ?,
-                    ai_patch_snippet = ?
+                    ai_patch_snippet = ?,
+                    status = 'ANALYZED'
                 WHERE endpoint_id = ?
                   AND old_schema_hash = ?
                   AND new_schema_hash = ?;

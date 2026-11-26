@@ -60,6 +60,14 @@ CREATE TABLE IF NOT EXISTS drift_incidents (
 -- Enforced at application level; SQLite CHECK constraints cannot be altered
 -- on existing tables without recreation.
 
+-- One-time migration: mark existing incidents with ai_analysis populated
+-- as ANALYZED (they were analyzed before status tracking was added)
+UPDATE drift_incidents
+SET status = 'ANALYZED'
+WHERE status = 'OPEN'
+  AND ai_analysis IS NOT NULL
+  AND TRIM(ai_analysis) != '';
+
 -- Table: sources — vendor spec sources to monitor for contract drift
 CREATE TABLE IF NOT EXISTS sources (
     id INTEGER PRIMARY KEY,

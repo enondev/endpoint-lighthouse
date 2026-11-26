@@ -201,8 +201,24 @@ func (h *APIHandler) HandleIncidents(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Add is_analyzed flag: an incident is analyzed if ai_analysis is populated,
+	// regardless of status (handles legacy incidents analyzed before status tracking)
+	analyzedRows := make([]map[string]any, len(rows))
+	for i, row := range rows {
+		rowCopy := make(map[string]any, len(row))
+		for k, v := range row {
+			rowCopy[k] = v
+		}
+		if ai, ok := row["ai_analysis"].(string); ok && ai != "" {
+			rowCopy["is_analyzed"] = true
+		} else {
+			rowCopy["is_analyzed"] = false
+		}
+		analyzedRows[i] = rowCopy
+	}
+
 	logger.Info("incidents endpoint served", slog.Int("returned", len(rows)), slog.Int("total_count", totalCount), slog.Int("page", page), slog.Duration("duration", duration))
-	writeJSON(w, http.StatusOK, map[string]any{"incidents": rows, "total_count": totalCount, "page": page, "limit": limit})
+	writeJSON(w, http.StatusOK, map[string]any{"incidents": analyzedRows, "total_count": totalCount, "page": page, "limit": limit})
 }
 
 // FetchPendingIncidents queries D1 for incidents awaiting AI analysis or stuck with fallback analysis.
