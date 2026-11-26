@@ -14,6 +14,9 @@ import (
 	"sync/atomic"
 	"time"
 
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/propagation"
+
 	"github.com/enondev/endpoint-lighthouse-probe/internal/cloudflare"
 	"github.com/enondev/endpoint-lighthouse-probe/internal/config"
 	"github.com/enondev/endpoint-lighthouse-probe/internal/schema"
@@ -472,6 +475,8 @@ func (r *Runner) postWebhook(ctx context.Context, targetURL string, body []byte)
 	if r.cfg.InternalWebhookSecret != "" {
 		req.Header.Set("X-Internal-Secret", r.cfg.InternalWebhookSecret)
 	}
+	// Inject W3C TraceContext for distributed tracing across service boundaries
+	otel.GetTextMapPropagator().Inject(ctx, propagation.HeaderCarrier(req.Header))
 	resp, err := r.httpClient.Do(req)
 	if err != nil {
 		slog.Warn("webhook dispatch failed", "url", targetURL, "err", err)
