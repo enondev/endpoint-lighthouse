@@ -4,39 +4,55 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"strconv"
 	"sync"
 	"time"
 
 	"github.com/enondev/endpoint-lighthouse-api/internal/observability"
 )
 
+// eventBufLen is the number of recent events kept for SSE replay on reconnect.
+const eventBufLen = 50
+
 type Event struct {
-	Type string `json:"type"`
-	Data string `json:"data"`
+	ID    int64  `json:"id"`
+	Type  string `json:"type"`
+	Data  string `json:"data"`
 }
 
 type Hub struct {
-	mu      sync.RWMutex
-	clients map[chan Event]struct{}
-	logger  *slog.Logger
+	mu          sync.RWMutex
+	clients     map[chan Event]struct{}
+	eventBuf    []Event   // ring buffer of recent events for replay
+	eventCounter int64    // monotonically increasing event ID
+	logger      *slog.Logger
 }
 
 func NewHub(logger *slog.Logger) *Hub {
 	return &Hub{
-		clients: make(map[chan Event]struct{}),
-		logger:  logger,
+		clients:   make(map[chan Event]struct{}),
+		eventBuf:  make([]Event, 0, eventBufLen),
+		logger:    logger,
 	}
 }
 
 func (h *Hub) Broadcast(eventType string, jsonPayload string) {
-	h.mu.RLock()
+	h.mu.Lock()
+	h.eventCounter++
+	ev := Event{ID: h.eventCounter, Type: eventType, Data: jsonPayload}
+
+	// Store in ring buffer for replay on reconnect
+	h.eventBuf = append(h.eventBuf, ev)
+	if len(h.eventBuf) > eventBufLen {
+		h.eventBuf = h.eventBuf[1:]
+	}
+
 	clientCount := len(h.clients)
-	ev := Event{Type: eventType, Data: jsonPayload}
 	clients := make([]chan Event, 0, len(h.clients))
 	for ch := range h.clients {
 		clients = append(clients, ch)
 	}
-	h.mu.RUnlock()
+	h.mu.Unlock()
 
 	observability.SetSSEClientsConnected(clientCount)
 	observability.RecordSSEBroadcast(eventType)
@@ -80,6 +96,28 @@ func (h *Hub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	// Initial handshake comment
 	_, _ = fmt.Fprintf(w, ": connected\n\n")
+	flusher.Flush()
+
+	// Replay events missed while disconnected (Last-Event-ID)
+	lastID := int64(0)
+	if lid := r.Header.Get("Last-Event-ID"); lid != "" {
+		if parsed, err := strconv.ParseInt(lid, 10, 64); err == nil {
+			lastID = parsed
+		}
+	}
+
+	h.mu.RLock()
+	events := make([]Event, 0, len(h.eventBuf))
+	for _, ev := range h.eventBuf {
+		if ev.ID > lastID {
+			events = append(events, ev)
+		}
+	}
+	h.mu.RUnlock()
+
+	for _, ev := range events {
+		_, _ = fmt.Fprintf(w, "event: %s\ndata: %s\n\n", ev.Type, ev.Data)
+	}
 	flusher.Flush()
 
 	ticker := time.NewTicker(25 * time.Second)
