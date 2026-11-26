@@ -378,11 +378,21 @@ func (p *Pipeline) processOperation(ctx context.Context, src Source, op Operatio
 	return obs, opDiffs, liveShapeHash, nil
 }
 
-// bodySample returns a truncated sample of the body for storage.
+// bodySample returns a truncated, scrubbed sample of the body for storage.
 // Limits body size to 256 bytes to avoid bloating the observations table.
+// Scrubs sensitive fields (tokens, secrets, PII) from JSON bodies.
 func bodySample(body []byte) string {
 	if len(body) == 0 {
 		return ""
+	}
+	// Try to parse as JSON and scrub sensitive fields
+	var parsed any
+	if err := json.Unmarshal(body, &parsed); err == nil {
+		scrubbed := scrub.ScrubValue(parsed)
+		scrubbedBytes, err := json.Marshal(scrubbed)
+		if err == nil {
+			body = scrubbedBytes
+		}
 	}
 	maxLen := 256
 	if len(body) > maxLen {
