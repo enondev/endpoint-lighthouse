@@ -312,6 +312,7 @@ func (h *APIHandler) FetchAllOpenIncidents(ctx context.Context, limit int) ([]Pe
 
 // HandleAnalysisComplete receives a webhook from SnapDeploy (ai-worker-py)
 // after it updates severity, diff_summary, ai_analysis, and ai_patch_snippet in drift_incidents.
+// Updates the incident status to reflect that analysis is complete and broadcasts SSE.
 func (h *APIHandler) HandleAnalysisComplete(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	logger := h.logger.With(append(observability.WithTrace(ctx), slog.String("handler", "analysis-completed"))...)
@@ -323,17 +324,92 @@ func (h *APIHandler) HandleAnalysisComplete(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
+	incidentID, ok := payload["incident_id"].(float64)
+	if !ok || incidentID == 0 {
+		logger.Warn("analysis-completed missing incident_id")
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "missing incident_id"})
+		return
+	}
+
+	// Update incident status to reflect analysis completion.
+	// The ai-worker already updated severity/diff_summary/ai_analysis/ai_patch_snippet
+	// via update_d1_incident; here we transition status off OPEN so the dashboard
+	// can distinguish analyzed incidents from pending ones.
+	status := "ANALYZED"
+	_, err := h.d1.Query(ctx, `
+		UPDATE drift_incidents
+		SET status = ?
+		WHERE id = ?
+	`, status, int(incidentID))
+	if err != nil {
+		logger.Error("analysis-completed failed to update incident status",
+			slog.Int("incident_id", int(incidentID)), slog.String("error", err.Error()))
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to update incident"})
+		return
+	}
+
 	raw, _ := json.Marshal(payload)
 	h.hub.Broadcast("analysis_ready", string(raw))
 	observability.RecordSSEBroadcast("analysis_ready")
 
-	logger.Info("analysis-completed broadcasted",
-		slog.Any("incident_id", payload["incident_id"]),
+	logger.Info("analysis-completed broadcasted and status updated",
+		slog.Int("incident_id", int(incidentID)),
 		slog.String("endpoint_id", toString(payload["endpoint_id"])),
 		slog.String("severity", toString(payload["severity"])),
+		slog.String("status", status),
 	)
 
-	writeJSON(w, http.StatusOK, map[string]string{"status": "broadcasted"})
+	writeJSON(w, http.StatusOK, map[string]string{"status": "broadcasted", "incident_status": status})
+}
+
+// HandleIncidentByID returns a single drift incident by its ID for dashboard detail views.
+func (h *APIHandler) HandleIncidentByID(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	logger := h.logger.With(append(observability.WithTrace(ctx), slog.String("handler", "incident_by_id"))...)
+
+	start := time.Now()
+	idStr := r.PathValue("id")
+	if idStr == "" {
+		logger.Warn("incident by id missing id parameter")
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "missing id"})
+		return
+	}
+
+	sql := `
+		SELECT
+			di.id,
+			di.endpoint_id,
+			e.name AS endpoint_name,
+			e.category AS endpoint_category,
+			di.old_schema_hash,
+			di.new_schema_hash,
+			di.severity,
+			di.severity_score,
+			di.diff_summary,
+			di.ai_analysis,
+			di.ai_patch_snippet,
+			di.status,
+			di.detected_at
+		FROM drift_incidents di
+		LEFT JOIN endpoints e ON e.id = di.endpoint_id
+		WHERE di.id = ?
+		LIMIT 1
+	`
+	rows, err := h.d1.Query(ctx, sql, idStr)
+	duration := time.Since(start)
+	if err != nil {
+		logger.Error("incident by id d1 query failed", slog.String("error", err.Error()), slog.Duration("duration", duration))
+		writeJSON(w, http.StatusBadGateway, map[string]string{"error": err.Error()})
+		return
+	}
+
+	if len(rows) == 0 {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "incident not found"})
+		return
+	}
+
+	logger.Info("incident by id served", slog.String("id", idStr), slog.Duration("duration", duration))
+	writeJSON(w, http.StatusOK, map[string]any{"incident": rows[0]})
 }
 
 func writeJSON(w http.ResponseWriter, status int, data any) {

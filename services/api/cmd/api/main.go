@@ -137,6 +137,7 @@ func main() {
 	mux.Handle("GET /api/v1/status", withCORS(cfg.AllowedOrigin, withRequestID(logger, observability.Handler("/api/v1/status", http.HandlerFunc(apiHandler.HandleStatus)))))
 	mux.Handle("GET /api/v1/endpoints", withCORS(cfg.AllowedOrigin, withRequestID(logger, observability.Handler("/api/v1/endpoints", http.HandlerFunc(apiHandler.HandleEndpoints)))))
 	mux.Handle("GET /api/v1/incidents", withCORS(cfg.AllowedOrigin, withRequestID(logger, observability.Handler("/api/v1/incidents", http.HandlerFunc(apiHandler.HandleIncidents)))))
+	mux.Handle("GET /api/v1/incidents/{id}", withCORS(cfg.AllowedOrigin, withRequestID(logger, observability.Handler("/api/v1/incidents/{id}", http.HandlerFunc(apiHandler.HandleIncidentByID)))))
 	mux.Handle("GET /api/v1/stream", withCORS(cfg.AllowedOrigin, withRequestID(logger, hub)))
 
 	// Internal Webhook: Drift Detected (from probe)
