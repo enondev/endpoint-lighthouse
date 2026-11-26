@@ -224,6 +224,42 @@ function init() {
   connectSSE();
 }
 
+function showToast(message, type = "info") {
+  const container = document.getElementById("toast-container");
+  if (!container) return;
+
+  const toast = document.createElement("div");
+  toast.className = `toast ${type}`;
+
+  let iconHtml = "";
+  if (type === "success") {
+    iconHtml = "<svg width='18' height='18' viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2'><path d='M22 11.08V12a10 10 0 1 1-5.93-9.14'></path><polyline points='22 4 12 14.01 9 11.01'></polyline></svg>";
+  } else if (type === "error") {
+    iconHtml = "<svg width='18' height='18' viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2'><circle cx='12' cy='12' r='10'></circle><path d='M15 9l6 6M9 9l6 6'></path></svg>";
+  } else {
+    iconHtml = "<svg width='18' height='18' viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2'><circle cx='12' cy='12' r='10'></circle><path d='M12 16v-4'></path><path d='M12 8h.01'></path></svg>";
+  }
+
+  toast.innerHTML = `
+    <div class="toast-icon">${iconHtml}</div>
+    <div class="toast-message">${escapeHtml(message)}</div>
+  `;
+
+  container.appendChild(toast);
+
+  // Auto-remove after 3 seconds
+  setTimeout(() => {
+    toast.style.animation = "toastFadeOut 0.3s ease-in forwards";
+    setTimeout(() => toast.remove(), 300);
+  }, 3000);
+}
+
+function escapeHtml(text) {
+  const div = document.createElement("div");
+  div.textContent = text;
+  return div.innerHTML;
+}
+
 async function fetchJSON(path) {
   const res = await fetch(`${state.apiBase}${path}`, {
     headers: { Accept: "application/json" },
@@ -253,8 +289,28 @@ async function transitionIncident(newStatus) {
 
   const oldStatus = els.modalMetaStatus.textContent;
 
+  // Determine which button was clicked to disable it during request
+  const btnMap = {
+    ACKNOWLEDGED: els.btnAcknowledge,
+    RESOLVED: els.btnResolve,
+    OPEN: els.btnReopen,
+  };
+  const activeBtn = btnMap[newStatus];
+  if (activeBtn) {
+    activeBtn.disabled = true;
+    activeBtn.textContent = "Updating…";
+  }
+
   try {
     await patchIncidentStatus(incId, newStatus);
+
+    // Show toast on success
+    const statusLabels = {
+      ACKNOWLEDGED: "Acknowledged",
+      RESOLVED: "Resolved",
+      OPEN: "Reopened",
+    };
+    showToast(`Incident #${incId} ${statusLabels[newStatus] || newStatus}`, "success");
 
     // Update local state so the list reflects the change immediately
     const idx = state.incidents.findIndex((i) => String(i.id) === incId);
@@ -274,7 +330,18 @@ async function transitionIncident(newStatus) {
     // Close modal after a brief moment so user sees the change
     setTimeout(() => els.modal.close(), 800);
   } catch (err) {
-    alert("Failed to update status: " + err.message);
+    showToast(`Failed to update status: ${err.message}`, "error");
+  } finally {
+    // Re-enable button
+    if (activeBtn) {
+      activeBtn.disabled = false;
+      activeBtn.textContent =
+        activeBtn.id === "btn-acknowledge"
+          ? "Acknowledge"
+          : activeBtn.id === "btn-resolve"
+          ? "Resolve"
+          : "Reopen";
+    }
   }
 }
 
