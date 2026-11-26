@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/enondev/endpoint-lighthouse-api/internal/cloudflare"
@@ -426,6 +427,98 @@ func (h *APIHandler) HandleIncidentByID(w http.ResponseWriter, r *http.Request) 
 
 	logger.Info("incident by id served", slog.String("id", idStr), slog.Duration("duration", duration))
 	writeJSON(w, http.StatusOK, map[string]any{"incident": rows[0]})
+}
+
+// HandleIncidentStatusUpdate transitions a drift incident's status.
+// Valid transitions: OPEN->ACKNOWLEDGED|RESOLVED, ACKNOWLEDGED->RESOLVED|OPEN, RESOLVED->OPEN.
+func (h *APIHandler) HandleIncidentStatusUpdate(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	logger := h.logger.With(append(observability.WithTrace(ctx), slog.String("handler", "incident_status_update"))...)
+
+	start := time.Now()
+	idStr := r.PathValue("id")
+	if idStr == "" {
+		logger.Warn("incident status update missing id parameter")
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "missing id"})
+		return
+	}
+
+	var req struct {
+		Status string `json:"status"`
+	}
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&req); err != nil {
+		logger.Warn("incident status update invalid json", slog.String("error", err.Error()))
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid json"})
+		return
+	}
+
+	newStatus := strings.ToUpper(req.Status)
+	validStatuses := map[string]bool{"OPEN": true, "ACKNOWLEDGED": true, "RESOLVED": true}
+	if !validStatuses[newStatus] {
+		logger.Warn("incident status update invalid status", slog.String("status", newStatus))
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid status"})
+		return
+	}
+
+	// First, fetch the current incident to validate transition
+	sql := `SELECT status FROM drift_incidents WHERE id = ? LIMIT 1`
+	rows, err := h.d1.Query(ctx, sql, idStr)
+	if err != nil {
+		logger.Error("incident status update d1 query failed", slog.String("error", err.Error()), slog.Duration("duration", time.Since(start)))
+		writeJSON(w, http.StatusBadGateway, map[string]string{"error": err.Error()})
+		return
+	}
+	if len(rows) == 0 {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "incident not found"})
+		return
+	}
+
+	currentStatus, _ := rows[0]["status"].(string)
+
+	// Validate transition
+	validTransition := false
+	switch currentStatus {
+	case "OPEN":
+		validTransition = newStatus == "ACKNOWLEDGED" || newStatus == "RESOLVED"
+	case "ACKNOWLEDGED":
+		validTransition = newStatus == "RESOLVED" || newStatus == "OPEN"
+	case "RESOLVED":
+		validTransition = newStatus == "OPEN"
+	}
+
+	if !validTransition {
+		logger.Warn("incident status update invalid transition",
+			slog.String("current_status", currentStatus),
+			slog.String("new_status", newStatus),
+		)
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid status transition"})
+		return
+	}
+
+	// Update the status
+	_, err = h.d1.Query(ctx, `UPDATE drift_incidents SET status = ? WHERE id = ?`, newStatus, idStr)
+	if err != nil {
+		logger.Error("incident status update d1 update failed",
+			slog.String("error", err.Error()),
+			slog.Duration("duration", time.Since(start)),
+		)
+		writeJSON(w, http.StatusBadGateway, map[string]string{"error": err.Error()})
+		return
+	}
+
+	logger.Info("incident status updated",
+		slog.String("id", idStr),
+		slog.String("current_status", currentStatus),
+		slog.String("new_status", newStatus),
+		slog.Duration("duration", time.Since(start)),
+	)
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"status":       "updated",
+		"incident_id":  idStr,
+		"old_status":   currentStatus,
+		"new_status":   newStatus,
+	})
 }
 
 func writeJSON(w http.ResponseWriter, status int, data any) {
