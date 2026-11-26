@@ -2,6 +2,7 @@ package redis
 
 import (
 	"bufio"
+	"context"
 	"crypto/tls"
 	"fmt"
 	"net"
@@ -36,10 +37,42 @@ func NewClient(rawURL string) (*Client, error) {
 	}, nil
 }
 
+// Ping checks Redis connectivity with a PING command.
+func (c *Client) Ping(ctx context.Context) error {
+	conn, err := c.dialContext(ctx)
+	if err != nil {
+		return err
+	}
+	defer conn.Close()
+
+	reader := bufio.NewReader(conn)
+
+	if c.password != "" {
+		if err := sendCommand(conn, "AUTH", c.password); err != nil {
+			return err
+		}
+		if _, err := reader.ReadString('\n'); err != nil {
+			return err
+		}
+	}
+
+	if err := sendCommand(conn, "PING"); err != nil {
+		return err
+	}
+	resp, err := reader.ReadString('\n')
+	if err != nil {
+		return err
+	}
+	if !strings.HasPrefix(resp, "+PONG") {
+		return fmt.Errorf("unexpected redis ping response: %s", strings.TrimSpace(resp))
+	}
+	return nil
+}
+
 // AcquireCooldown runs atomic SET <key> "1" NX EX <ttlSeconds>.
 // Returns true if the lock was acquired (first alert), false if already in cooldown.
-func (c *Client) AcquireCooldown(key string, ttl time.Duration) (bool, error) {
-	conn, err := c.dial()
+func (c *Client) AcquireCooldown(ctx context.Context, key string, ttl time.Duration) (bool, error) {
+	conn, err := c.dialContext(ctx)
 	if err != nil {
 		return false, err
 	}
@@ -68,7 +101,6 @@ func (c *Client) AcquireCooldown(key string, ttl time.Duration) (bool, error) {
 		return false, err
 	}
 
-	// "+OK\r\n" means key was set; "$-1\r\n" means key already existed (NX failed)
 	if strings.HasPrefix(resp, "+OK") {
 		return true, nil
 	}
@@ -78,12 +110,16 @@ func (c *Client) AcquireCooldown(key string, ttl time.Duration) (bool, error) {
 	return false, fmt.Errorf("unexpected redis response: %s", strings.TrimSpace(resp))
 }
 
-func (c *Client) dial() (net.Conn, error) {
-	dialer := &net.Dialer{Timeout: 3 * time.Second}
+func (c *Client) dialContext(ctx context.Context) (net.Conn, error) {
+	dialer := &net.Dialer{}
 	if c.useTLS {
 		return tls.DialWithDialer(dialer, "tcp", c.addr, &tls.Config{MinVersion: tls.VersionTLS12})
 	}
-	return dialer.Dial("tcp", c.addr)
+	return dialer.DialContext(ctx, "tcp", c.addr)
+}
+
+func (c *Client) dial() (net.Conn, error) {
+	return c.dialContext(context.Background())
 }
 
 func sendCommand(conn net.Conn, args ...string) error {

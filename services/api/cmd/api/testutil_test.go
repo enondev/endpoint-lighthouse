@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -331,6 +332,7 @@ type testEnv struct {
 	RDB        *redis.Client
 	Handler    *handlers.APIHandler
 	Hub        *sse.Hub
+	Logger     *slog.Logger
 }
 
 func setupTestEnv(t *testing.T) *testEnv {
@@ -356,8 +358,9 @@ func setupTestEnv(t *testing.T) *testEnv {
 	if err != nil {
 		t.Fatalf("failed to create test redis client: %v", err)
 	}
-	hub := sse.NewHub()
-	apiHandler := handlers.NewAPIHandler(d1Client, hub)
+	testLogger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	hub := sse.NewHub(testLogger)
+	apiHandler := handlers.NewAPIHandler(d1Client, hub, testLogger)
 
 	return &testEnv{
 		D1:         d1Mock,
@@ -366,5 +369,6 @@ func setupTestEnv(t *testing.T) *testEnv {
 		RDB:        rdb,
 		Handler:    apiHandler,
 		Hub:        hub,
+		Logger:     testLogger,
 	}
 }

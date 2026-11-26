@@ -4,17 +4,20 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"strconv"
 	"time"
 
 	"github.com/enondev/endpoint-lighthouse-api/internal/cloudflare"
+	"github.com/enondev/endpoint-lighthouse-api/internal/observability"
 	"github.com/enondev/endpoint-lighthouse-api/internal/sse"
 )
 
 type APIHandler struct {
-	d1  *cloudflare.D1Client
-	hub *sse.Hub
+	d1     *cloudflare.D1Client
+	hub    *sse.Hub
+	logger *slog.Logger
 }
 
 type PendingIncident struct {
@@ -28,11 +31,15 @@ type PendingIncident struct {
 	DriftedKVKey  string `json:"drifted_kv_key,omitempty"`
 }
 
-func NewAPIHandler(d1 *cloudflare.D1Client, hub *sse.Hub) *APIHandler {
-	return &APIHandler{d1: d1, hub: hub}
+func NewAPIHandler(d1 *cloudflare.D1Client, hub *sse.Hub, logger *slog.Logger) *APIHandler {
+	return &APIHandler{d1: d1, hub: hub, logger: logger}
 }
 
 func (h *APIHandler) HandleStatus(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	logger := h.logger.With(append(observability.WithTrace(ctx), slog.String("handler", "status"))...)
+
+	start := time.Now()
 	sql := `
 		SELECT
 			(SELECT COUNT(*) FROM endpoints WHERE is_active = 1) AS active_endpoints,
@@ -40,8 +47,10 @@ func (h *APIHandler) HandleStatus(w http.ResponseWriter, r *http.Request) {
 			(SELECT COUNT(*) FROM drift_incidents WHERE status = 'ACKNOWLEDGED') AS acknowledged_incidents,
 			(SELECT MAX(probed_at) FROM probe_runs) AS last_probed_at
 	`
-	rows, err := h.d1.Query(r.Context(), sql)
+	rows, err := h.d1.Query(ctx, sql)
+	duration := time.Since(start)
 	if err != nil {
+		logger.Error("status endpoint d1 query failed", slog.String("error", err.Error()), slog.Duration("duration", duration))
 		writeJSON(w, http.StatusBadGateway, map[string]string{"error": err.Error()})
 		return
 	}
@@ -63,10 +72,15 @@ func (h *APIHandler) HandleStatus(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	logger.Info("status endpoint served", slog.Int("open_incidents", toInt(summary["open_incidents"])), slog.Duration("duration", duration))
 	writeJSON(w, http.StatusOK, summary)
 }
 
 func (h *APIHandler) HandleEndpoints(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	logger := h.logger.With(append(observability.WithTrace(ctx), slog.String("handler", "endpoints"))...)
+
+	start := time.Now()
 	sql := `
 		SELECT
 			e.id,
@@ -91,16 +105,23 @@ func (h *APIHandler) HandleEndpoints(w http.ResponseWriter, r *http.Request) {
 		LEFT JOIN schema_baselines sb ON sb.endpoint_id = e.id AND sb.is_current = 1
 		ORDER BY e.category ASC, e.name ASC
 	`
-	rows, err := h.d1.Query(r.Context(), sql)
+	rows, err := h.d1.Query(ctx, sql)
+	duration := time.Since(start)
 	if err != nil {
+		logger.Error("endpoints endpoint d1 query failed", slog.String("error", err.Error()), slog.Duration("duration", duration))
 		writeJSON(w, http.StatusBadGateway, map[string]string{"error": err.Error()})
 		return
 	}
 
+	logger.Info("endpoints endpoint served", slog.Int("count", len(rows)), slog.Duration("duration", duration))
 	writeJSON(w, http.StatusOK, map[string]any{"endpoints": rows})
 }
 
 func (h *APIHandler) HandleIncidents(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	logger := h.logger.With(append(observability.WithTrace(ctx), slog.String("handler", "incidents"))...)
+
+	start := time.Now()
 	limit := 25
 	if rawLimit := r.URL.Query().Get("limit"); rawLimit != "" {
 		if parsed, err := strconv.Atoi(rawLimit); err == nil && parsed > 0 && parsed <= 100 {
@@ -116,11 +137,10 @@ func (h *APIHandler) HandleIncidents(w http.ResponseWriter, r *http.Request) {
 	}
 	offset := (page - 1) * limit
 
-	statusFilter := r.URL.Query().Get("status") // Optional: 'OPEN', 'ACKNOWLEDGED', 'RESOLVED'
-	fromFilter := r.URL.Query().Get("from")     // Optional: RFC3339 / ISO date
-	toFilter := r.URL.Query().Get("to")         // Optional: RFC3339 / ISO date
+	statusFilter := r.URL.Query().Get("status")
+	fromFilter := r.URL.Query().Get("from")
+	toFilter := r.URL.Query().Get("to")
 
-	// Build the WHERE clause and args once, reused by both COUNT and SELECT
 	whereSql := "WHERE 1=1"
 	args := []any{}
 
@@ -138,10 +158,10 @@ func (h *APIHandler) HandleIncidents(w http.ResponseWriter, r *http.Request) {
 		args = append(args, toFilter)
 	}
 
-	// Count total matching rows for pagination metadata
 	countSql := `SELECT COUNT(*) as total FROM drift_incidents di LEFT JOIN endpoints e ON e.id = di.endpoint_id ` + whereSql
-	countRows, err := h.d1.Query(r.Context(), countSql, args...)
+	countRows, err := h.d1.Query(ctx, countSql, args...)
 	if err != nil {
+		logger.Error("incidents count d1 query failed", slog.String("error", err.Error()), slog.Duration("duration", time.Since(start)))
 		writeJSON(w, http.StatusBadGateway, map[string]string{"error": err.Error()})
 		return
 	}
@@ -173,17 +193,22 @@ func (h *APIHandler) HandleIncidents(w http.ResponseWriter, r *http.Request) {
 		ORDER BY di.detected_at DESC LIMIT ? OFFSET ?`
 	args = append(args, limit, offset)
 
-	rows, err := h.d1.Query(r.Context(), sql, args...)
+	rows, err := h.d1.Query(ctx, sql, args...)
+	duration := time.Since(start)
 	if err != nil {
+		logger.Error("incidents select d1 query failed", slog.String("error", err.Error()), slog.Duration("duration", duration))
 		writeJSON(w, http.StatusBadGateway, map[string]string{"error": err.Error()})
 		return
 	}
 
+	logger.Info("incidents endpoint served", slog.Int("returned", len(rows)), slog.Int("total_count", totalCount), slog.Int("page", page), slog.Duration("duration", duration))
 	writeJSON(w, http.StatusOK, map[string]any{"incidents": rows, "total_count": totalCount, "page": page, "limit": limit})
 }
 
 // FetchPendingIncidents queries D1 for incidents awaiting AI analysis or stuck with fallback analysis.
 func (h *APIHandler) FetchPendingIncidents(ctx context.Context, limit int) ([]PendingIncident, error) {
+	logger := h.logger.With(append(observability.WithTrace(ctx), slog.String("handler", "fetch_pending_incidents"))...)
+
 	if limit <= 0 || limit > 25 {
 		limit = 5
 	}
@@ -212,10 +237,15 @@ func (h *APIHandler) FetchPendingIncidents(ctx context.Context, limit int) ([]Pe
 		ORDER BY di.detected_at DESC
 		LIMIT ?;
 	`
+	start := time.Now()
 	rows, err := h.d1.Query(ctx, sql, limit)
+	duration := time.Since(start)
 	if err != nil {
+		logger.Error("fetch pending incidents d1 query failed", slog.String("error", err.Error()), slog.Duration("duration", duration))
 		return nil, fmt.Errorf("query pending incidents: %w", err)
 	}
+
+	logger.Info("fetched pending incidents", slog.Int("count", len(rows)), slog.Duration("duration", duration))
 
 	var out []PendingIncident
 	raw, err := json.Marshal(rows)
@@ -231,14 +261,25 @@ func (h *APIHandler) FetchPendingIncidents(ctx context.Context, limit int) ([]Pe
 // HandleAnalysisComplete receives a webhook from SnapDeploy (ai-worker-py)
 // after it updates severity, diff_summary, ai_analysis, and ai_patch_snippet in drift_incidents.
 func (h *APIHandler) HandleAnalysisComplete(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	logger := h.logger.With(append(observability.WithTrace(ctx), slog.String("handler", "analysis-completed"))...)
+
 	var payload map[string]any
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&payload); err != nil {
+		logger.Warn("analysis-completed invalid json", slog.String("error", err.Error()))
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid json"})
 		return
 	}
 
 	raw, _ := json.Marshal(payload)
 	h.hub.Broadcast("analysis_ready", string(raw))
+	observability.RecordSSEBroadcast("analysis_ready")
+
+	logger.Info("analysis-completed broadcasted",
+		slog.Any("incident_id", payload["incident_id"]),
+		slog.String("endpoint_id", toString(payload["endpoint_id"])),
+		slog.String("severity", toString(payload["severity"])),
+	)
 
 	writeJSON(w, http.StatusOK, map[string]string{"status": "broadcasted"})
 }
@@ -247,4 +288,23 @@ func writeJSON(w http.ResponseWriter, status int, data any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(data)
+}
+
+func toInt(v any) int {
+	switch n := v.(type) {
+	case float64:
+		return int(n)
+	case int:
+		return n
+	case int64:
+		return int(n)
+	}
+	return 0
+}
+
+func toString(v any) string {
+	if s, ok := v.(string); ok {
+		return s
+	}
+	return ""
 }

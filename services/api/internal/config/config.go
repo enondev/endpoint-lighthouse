@@ -19,6 +19,13 @@ type Config struct {
 	CFAccountID           string
 	CFD1DatabaseID        string
 	ReconcilePeriod       time.Duration
+
+	// Observability
+	Environment     string
+	LogLevel        string
+	MetricsPort     string
+	OTELotlpEndpoint string
+	OTELServiceName string
 }
 
 func Load() Config {
@@ -29,9 +36,9 @@ func Load() Config {
 		ttlSec = 900
 	}
 
-	rpMin, err := strconv.Atoi(getEnv("RECONCILE_PERIOD", "7"))
+	rpMin, err := strconv.Atoi(getEnv("RECONCILE_PERIOD", "5"))
 	if err != nil || rpMin <= 0 {
-		rpMin = 7
+		rpMin = 5
 	}
 
 	return Config{
@@ -45,6 +52,13 @@ func Load() Config {
 		CFAccountID:           os.Getenv("CF_ACCOUNT_ID"),
 		CFD1DatabaseID:        os.Getenv("CF_D1_DATABASE_ID"),
 		ReconcilePeriod:       time.Duration(rpMin) * time.Minute,
+
+		// Observability
+		Environment:      getEnv("ENVIRONMENT", "development"),
+		LogLevel:         getEnv("LOG_LEVEL", "info"),
+		MetricsPort:      getEnv("METRICS_PORT", "9090"),
+		OTELotlpEndpoint: getEnv("OTEL_EXPORTER_OTLP_ENDPOINT", ""),
+		OTELServiceName:  getEnv("OTEL_SERVICE_NAME", "endpoint-lighthouse-api"),
 	}
 }
 

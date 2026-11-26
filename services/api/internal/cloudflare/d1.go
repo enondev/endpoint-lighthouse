@@ -10,6 +10,8 @@ import (
 	"os"
 	"strings"
 	"time"
+
+	"github.com/enondev/endpoint-lighthouse-api/internal/observability"
 )
 
 const cfAPIBase = "https://api." + "cloudflare.com/"
@@ -72,21 +74,27 @@ func (c *D1Client) Query(ctx context.Context, sql string, params ...any) ([]map[
 
 	resp, err := c.http.Do(req)
 	if err != nil {
+		observability.RecordD1Query(false, 0)
 		return nil, err
 	}
 	defer resp.Body.Close()
 
+	start := time.Now()
 	body, err := io.ReadAll(io.LimitReader(resp.Body, 4<<20)) // 4MB cap
+	duration := time.Since(start)
 	if err != nil {
+		observability.RecordD1Query(false, duration)
 		return nil, err
 	}
 
 	if resp.StatusCode >= 400 {
+		observability.RecordD1Query(false, duration)
 		return nil, fmt.Errorf("d1 http %d: %s", resp.StatusCode, string(body))
 	}
 
 	var parsed d1QueryResponse
 	if err := json.Unmarshal(body, &parsed); err != nil {
+		observability.RecordD1Query(false, duration)
 		return nil, err
 	}
 	if !parsed.Success {
@@ -94,8 +102,11 @@ func (c *D1Client) Query(ctx context.Context, sql string, params ...any) ([]map[
 		if len(parsed.Errors) > 0 {
 			msg = parsed.Errors[0].Message
 		}
+		observability.RecordD1Query(false, duration)
 		return nil, fmt.Errorf("d1 query failed: %s", msg)
 	}
+
+	observability.RecordD1Query(true, duration)
 
 	if len(parsed.Result) == 0 {
 		return []map[string]any{}, nil

@@ -2,9 +2,12 @@ package sse
 
 import (
 	"fmt"
+	"log/slog"
 	"net/http"
 	"sync"
 	"time"
+
+	"github.com/enondev/endpoint-lighthouse-api/internal/observability"
 )
 
 type Event struct {
@@ -15,24 +18,35 @@ type Event struct {
 type Hub struct {
 	mu      sync.RWMutex
 	clients map[chan Event]struct{}
+	logger  *slog.Logger
 }
 
-func NewHub() *Hub {
+func NewHub(logger *slog.Logger) *Hub {
 	return &Hub{
 		clients: make(map[chan Event]struct{}),
+		logger:  logger,
 	}
 }
 
 func (h *Hub) Broadcast(eventType string, jsonPayload string) {
 	h.mu.RLock()
-	defer h.mu.RUnlock()
-
+	clientCount := len(h.clients)
 	ev := Event{Type: eventType, Data: jsonPayload}
+	clients := make([]chan Event, 0, len(h.clients))
 	for ch := range h.clients {
+		clients = append(clients, ch)
+	}
+	h.mu.RUnlock()
+
+	observability.SetSSEClientsConnected(clientCount)
+	observability.RecordSSEBroadcast(eventType)
+
+	for _, ch := range clients {
 		select {
 		case ch <- ev:
 		default:
 			// Drop message for slow consumers rather than blocking the hub
+			h.logger.Debug("dropped sse event for slow consumer", slog.String("event", eventType))
 		}
 	}
 }
@@ -54,11 +68,14 @@ func (h *Hub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	h.clients[ch] = struct{}{}
 	h.mu.Unlock()
 
+	observability.SetSSEClientsConnected(h.clientCount())
+
 	defer func() {
 		h.mu.Lock()
 		delete(h.clients, ch)
 		h.mu.Unlock()
 		close(ch)
+		observability.SetSSEClientsConnected(h.clientCount())
 	}()
 
 	// Initial handshake comment
@@ -80,4 +97,10 @@ func (h *Hub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			flusher.Flush()
 		}
 	}
+}
+
+func (h *Hub) clientCount() int {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	return len(h.clients)
 }

@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -43,7 +44,7 @@ func buildTestMux(env *testEnv, internalSecret string) http.Handler {
 		}
 
 		cooldownKey := fmt.Sprintf("cooldown:%s:%s", payload.EndpointID, payload.NewSchemaHash)
-		acquired, err := env.RDB.AcquireCooldown(cooldownKey, 15*time.Minute)
+		acquired, err := env.RDB.AcquireCooldown(r.Context(), cooldownKey, 15*time.Minute)
 		if err != nil {
 			acquired = true
 		}
@@ -59,7 +60,7 @@ func buildTestMux(env *testEnv, internalSecret string) http.Handler {
 		env.Hub.Broadcast("drift_detected", string(rawJSON))
 
 		if env.SnapDeploy.Server.URL != "" {
-			go triggerSnapDeploy(env.SnapDeploy.Server.URL, internalSecret, rawJSON)
+			go triggerSnapDeploy(env.Logger, r.Context(), env.SnapDeploy.Server.URL, internalSecret, rawJSON)
 		}
 
 		w.WriteHeader(http.StatusAccepted)
@@ -79,7 +80,7 @@ func buildTestMux(env *testEnv, internalSecret string) http.Handler {
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
 		}
-		dispatched, err := reconcilePending(r.Context(), env.Handler, env.RDB, env.SnapDeploy.Server.URL, internalSecret, 10)
+		dispatched, err := reconcilePending(r.Context(), env.Handler, env.RDB, env.SnapDeploy.Server.URL, internalSecret, 10, env.Logger)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
@@ -198,7 +199,7 @@ func TestTriggerSnapDeployRetriesTransientFailures(t *testing.T) {
 		http.StatusAccepted,
 	}
 
-	triggerSnapDeploy(env.SnapDeploy.Server.URL, "sec-retry", []byte(`{"incident_id":7}`))
+	triggerSnapDeploy(env.Logger, context.Background(), env.SnapDeploy.Server.URL, "sec-retry", []byte(`{"incident_id":7}`))
 
 	reqs := env.SnapDeploy.WaitForRequests(t, 3, time.Second)
 	if len(reqs) != 3 {
@@ -211,7 +212,7 @@ func TestTriggerSnapDeployStopsOnClientError(t *testing.T) {
 
 	env.SnapDeploy.StatusQueue = []int{http.StatusBadRequest, http.StatusAccepted}
 
-	triggerSnapDeploy(env.SnapDeploy.Server.URL, "sec-400", []byte(`{"incident_id":8}`))
+	triggerSnapDeploy(env.Logger, context.Background(), env.SnapDeploy.Server.URL, "sec-400", []byte(`{"incident_id":8}`))
 
 	reqs := env.SnapDeploy.WaitForRequests(t, 1, time.Second)
 	if len(reqs) != 1 {
