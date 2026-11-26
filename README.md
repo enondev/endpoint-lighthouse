@@ -52,24 +52,20 @@ pytest tests/e2e -v
 
 ## Schema & Commands
 
-D1 schema (tables + seed data) lives in `migrations/schema.sql` and `migrations/seeds.sql`. Apply locally or remotely via wrangler:
+D1 schema (tables + seed data) lives in `migrations/schema.sql` and `migrations/seeds.sql`. Apply via your preferred D1 client (Cloudflare HTTP API, wrangler, or similar):
 
 ```bash
-# Apply schema to local D1
-npx wrangler d1 execute endpoint-lighthouse --local --file=./migrations/schema.sql
-npx wrangler d1 execute endpoint-lighthouse --local --file=./migrations/seeds.sql
+# Inspect (always run SELECT COUNT(*) first before destructive remote statements)
+SELECT COUNT(*) FROM sources;
+SELECT COUNT(*) FROM operations;
+SELECT COUNT(*) FROM diffs;
 
-# Inspect (always run SELECT COUNT(*) first before destructive --remote)
-npx wrangler d1 execute endpoint-lighthouse --remote --command="SELECT COUNT(*) FROM sources"
-npx wrangler d1 execute endpoint-lighthouse --remote --command="SELECT COUNT(*) FROM operations"
-npx wrangler d1 execute endpoint-lighthouse --remote --command="SELECT COUNT(*) FROM diffs"
-
-# Apply schema to remote D1 (only after confirming expected row counts above)
-npx wrangler d1 execute endpoint-lighthouse --remote --file=./migrations/schema.sql
-npx wrangler d1 execute endpoint-lighthouse --remote --file=./migrations/seeds.sql
+# Apply schema
+-- file: migrations/schema.sql
+-- file: migrations/seeds.sql
 ```
 
-Never run destructive statements against `--remote` without first running the equivalent `SELECT COUNT(*)` and confirming the expected row count.
+Never run destructive statements against remote D1 without first running the equivalent `SELECT COUNT(*)` and confirming the expected row count.
 
 ## Write Limits
 
