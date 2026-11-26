@@ -1,9 +1,9 @@
 module github.com/enondev/endpoint-lighthouse-api
 
-go 1.26.0
+go 1.25.0
 
 require (
-	github.com/prometheus/client_golang v1.26.0
+	github.com/prometheus/client_golang v1.25.0
 	go.opentelemetry.io/otel v1.47.0
 	go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp v1.47.0
 	go.opentelemetry.io/otel/sdk v1.47.0
