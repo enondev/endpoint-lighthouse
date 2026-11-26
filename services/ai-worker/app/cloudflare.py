@@ -9,7 +9,7 @@ from app.observability import get_logger
 from app.scoring import ScoringEngine
 
 logger = get_logger("endpoint_lighthouse.cloudflare")
-_VALID_SEVERITIES = {"NON_BREAKING", "WARNING", "BREAKING"}
+_VALID_SEVERITIES = {"breaking", "additive", "cosmetic"}
 MAX_TOKENS = 750
 
 
@@ -35,12 +35,12 @@ class CloudflareClient:
             f"Total output must fit within {MAX_TOKENS} tokens. Be extremely concise.\n"
             "Required shape:\n"
             '{\n'
-            '  "severity": "BREAKING" | "WARNING" | "NON_BREAKING",\n'
+            '  "severity": "breaking | additive | cosmetic",\n'
             '  "analysis": "One sentence, max 25 words, describing the change and client impact.",\n'
             '  "patch_snippet": "One short plain-English action step (no code blocks, no CLI commands)."\n'
             '}\n'
             "Example:\n"
-            '{"severity":"WARNING","analysis":"Field status.indicator changed from string to integer.","patch_snippet":"Wrap status.indicator in String() before display."}'
+            '{"severity":"breaking","analysis":"Field status.indicator removed from response schema.","patch_snippet":"Update client to handle missing status.indicator field."}'
         )
         body = {
             "messages": [
@@ -259,15 +259,27 @@ class CloudflareClient:
                 diff_keys=list(diff_summary.keys()) if isinstance(diff_summary, dict) else None,
             )
             return {
-                "severity": "WARNING",
+                "severity": "cosmetic",
                 "analysis": "Automated drift analysis completed; LLM returned no usable output.",
                 "patch_snippet": self._fallback_patch_snippet(diff_summary),
             }
 
         try:
             parsed = json.loads(cleaned)
-            raw_sev = str(parsed.get("severity", "WARNING")).upper().strip()
-            severity = raw_sev if raw_sev in _VALID_SEVERITIES else "WARNING"
+            raw_sev = str(parsed.get("severity", "cosmetic")).lower().strip()
+            # Map legacy severity values to new taxonomy
+            legacy_map = {
+                "breaking": "breaking",
+                "b": "breaking",
+                "warning": "additive",
+                "additive": "additive",
+                "non_breaking": "cosmetic",
+                "non-breaking": "cosmetic",
+                "cosmetic": "cosmetic",
+            }
+            severity = legacy_map.get(raw_sev, "cosmetic")
+            if severity not in _VALID_SEVERITIES:
+                severity = "cosmetic"
             patch_snippet = str(parsed.get("patch_snippet", "")).strip()
             if not patch_snippet:
                 patch_snippet = self._fallback_patch_snippet(diff_summary)
@@ -283,7 +295,7 @@ class CloudflareClient:
                 raw_text_preview=raw_text[:120],
             )
             return {
-                "severity": "WARNING",
+                "severity": "cosmetic",
                 "analysis": raw_text[:500] if raw_text else "Automated drift analysis completed.",
                 "patch_snippet": self._fallback_patch_snippet(diff_summary),
             }

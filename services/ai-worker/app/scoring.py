@@ -10,10 +10,10 @@ DEFAULT_WEIGHTS_PATH = Path(__file__).resolve().parent / "scoring_weights.json"
 
 DEFAULT_WEIGHTS = {
     "severity_level": {
-        "BREAKING": 40,
-        "WARNING": 30,
-        "NON_BREAKING": 20,
-        "PENDING": 10,
+        "breaking": 40,
+        "additive": 30,
+        "cosmetic": 20,
+        "pending": 10,
     },
     "status": {
         "OPEN": 20,
@@ -116,7 +116,7 @@ class ScoringEngine:
             weight_cfg = self.weights.get(name, 1)
             if isinstance(weight_cfg, dict):
                 # Dict weight: value is a category key; contribution is the mapped score.
-                contribution = float(weight_cfg.get(str(value).upper(), 0))
+                contribution = float(weight_cfg.get(str(value), 0))
             else:
                 # Scalar weight: contribution is value * weight.
                 contribution = float(value) * float(weight_cfg)
@@ -140,7 +140,7 @@ class ScoringEngine:
     # --- Feature extractors ---
 
     def _extract_severity_level(self, severity: str, **_: Any) -> str:
-        return (severity or "PENDING").upper()
+        return (severity or "pending").lower()
 
     def _extract_status(self, status: str, **_: Any) -> str:
         return (status or "OPEN").upper()
@@ -169,6 +169,6 @@ class ScoringEngine:
         return min(changed * per_field, cap)
 
     def _extract_is_breaking_multiplier(self, severity: str, **_: Any) -> float:
-        if (severity or "").upper() == "BREAKING":
+        if (severity or "").lower() == "breaking":
             return float(self.weights.get("multipliers", {}).get("is_breaking", 1.5))
         return 1.0

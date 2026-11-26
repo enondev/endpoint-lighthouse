@@ -218,7 +218,7 @@ async def _run_analysis(payload: AnalyzeRequest, request_id: str) -> AnalyzeResp
 
     timeout = httpx.Timeout(settings.http_timeout_seconds)
     transport = httpx.AsyncHTTPTransport(local_address="0.0.0.0", retries=2)
-    severity = "WARNING"
+    severity = "cosmetic"
     severity_score = 0
     analysis_text = "Automated drift analysis completed."
     patch_snippet = "// Review the schema diff and update client code accordingly."
