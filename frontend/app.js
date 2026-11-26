@@ -710,7 +710,88 @@ function openIncidentModal(inc) {
   }
   els.modalDiff.textContent = formattedDiff;
 
+  // Render visual diff tree from diff_summary
+  renderDiffTree(inc.diff_summary);
+
   els.modal.showModal();
+}
+
+function renderDiffTree(diffSummary) {
+  const container = document.getElementById("modal-diff-tree");
+  const countBadge = document.getElementById("modal-diff-change-count");
+
+  container.innerHTML = "";
+
+  let changes = [];
+  if (diffSummary) {
+    if (typeof diffSummary === "string") {
+      try {
+        changes = JSON.parse(diffSummary);
+      } catch {
+        changes = [];
+      }
+    } else if (Array.isArray(diffSummary)) {
+      changes = diffSummary;
+    }
+  }
+
+  if (changes.length === 0) {
+    countBadge.textContent = "0 changes";
+    countBadge.className = "badge";
+    container.innerHTML = '<div class="no-changes">No schema changes detected</div>';
+    return;
+  }
+
+  countBadge.textContent = `${changes.length} change${changes.length !== 1 ? "s" : ""}`;
+  countBadge.className = "badge change-count-badge";
+
+  // Group changes by top-level path for collapsible tree
+  const grouped = new Map();
+  const topLevel = [];
+
+  for (const change of changes) {
+    const path = change.path || "root";
+    const parts = path.split(".");
+    const topKey = parts[0] === "$" ? "root" : parts[0];
+
+    if (!grouped.has(topKey)) {
+      grouped.set(topKey, []);
+    }
+    grouped.get(topKey).push(change);
+
+    if (parts.length <= 2) {
+      topLevel.push(change);
+    }
+  }
+
+  for (const change of changes) {
+    const div = document.createElement("div");
+    div.className = `diff-change kind-${change.kind}`;
+
+    const kindBadge = document.createElement("span");
+    kindBadge.className = `diff-kind-badge kind-${change.kind}`;
+    kindBadge.textContent = change.kind;
+
+    const pathEl = document.createElement("span");
+    pathEl.className = "diff-path";
+    pathEl.textContent = change.path || "root";
+
+    const valuesEl = document.createElement("div");
+    valuesEl.className = "diff-values";
+
+    const specEl = document.createElement("span");
+    specEl.className = "diff-value spec";
+    specEl.textContent = change.spec_val !== undefined ? String(change.spec_val) : "—";
+
+    const liveEl = document.createElement("span");
+    liveEl.className = "diff-value live";
+    liveEl.textContent = change.live_val !== undefined ? String(change.live_val) : "—";
+
+    valuesEl.append(specEl, liveEl);
+
+    div.append(kindBadge, pathEl, valuesEl);
+    container.appendChild(div);
+  }
 }
 
 function connectSSE() {
