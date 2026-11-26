@@ -23,5 +23,12 @@ class Settings(BaseSettings):
     max_diff_chars: int = 4500
     http_timeout_seconds: float = 25.0
 
+    # Observability
+    environment: str = "development"
+    log_level: str = "INFO"
+    metrics_port: str = "9091"
+    otel_endpoint: str = ""
+    otel_service_name: str = "endpoint-lighthouse-ai-worker"
+
 
 settings = Settings()

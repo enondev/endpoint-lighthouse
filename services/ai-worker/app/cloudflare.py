@@ -1,15 +1,15 @@
 import json
-import logging
+import time
 from typing import Any
 
 import httpx
 
 from app.config import settings
+from app.observability import get_logger
 from app.scoring import ScoringEngine
 
-logger = logging.getLogger("endpoint_lighthouse.cloudflare")
-
-VALID_SEVERITIES = {"NON_BREAKING", "WARNING", "BREAKING"}
+logger = get_logger("endpoint_lighthouse.cloudflare")
+_VALID_SEVERITIES = {"NON_BREAKING", "WARNING", "BREAKING"}
 MAX_TOKENS = 750
 
 
@@ -61,10 +61,10 @@ class CloudflareClient:
         """Emit structured observability for the Workers AI response envelope."""
         if not isinstance(data, dict):
             logger.warning(
-                "Workers AI %s returned non-dict body (type=%s): %r",
-                label,
-                type(data).__name__,
-                str(data)[:200],
+                "Workers AI returned non-dict body",
+                label=label,
+                body_type=type(data).__name__,
+                body_preview=str(data)[:200],
             )
             return
         success = data.get("success")
@@ -73,13 +73,13 @@ class CloudflareClient:
         result = data.get("result")
         result_keys = list(result.keys()) if isinstance(result, dict) else None
         logger.warning(
-            "Workers AI %s envelope: success=%s errors=%s messages=%s result_keys=%s body_preview=%r",
-            label,
-            success,
-            errors,
-            messages,
-            result_keys,
-            str(data)[:300],
+            "Workers AI envelope",
+            label=label,
+            success=success,
+            errors=errors,
+            messages=messages,
+            result_keys=result_keys,
+            body_preview=str(data)[:300],
         )
 
     def _extract_raw(self, data: Any) -> str:
@@ -110,9 +110,27 @@ class CloudflareClient:
     async def get_kv_snapshot(self, client: httpx.AsyncClient, kv_key: str) -> Any:
         """Fetches immutable raw JSON snapshot from ENDPOINT_LIGHTHOUSE_SNAPSHOTS KV."""
         url = f"{self.base_url}/storage/kv/namespaces/{settings.cf_kv_namespace_id}/values/{kv_key}"
-        resp = await client.get(url, headers={"Authorization": f"Bearer {settings.cf_api_token}"})
-        resp.raise_for_status()
-        return resp.json()
+        start = time.perf_counter()
+        try:
+            resp = await client.get(url, headers={"Authorization": f"Bearer {settings.cf_api_token}"})
+            duration_ms = int((time.perf_counter() - start) * 1000)
+            resp.raise_for_status()
+            logger.debug(
+                "KV snapshot fetched",
+                kv_key=kv_key,
+                status_code=resp.status_code,
+                duration_ms=duration_ms,
+            )
+            return resp.json()
+        except Exception as exc:
+            duration_ms = int((time.perf_counter() - start) * 1000)
+            logger.warning(
+                "KV snapshot fetch failed",
+                kv_key=kv_key,
+                duration_ms=duration_ms,
+                error=str(exc)[:200],
+            )
+            raise
 
     async def run_llm_analysis(
         self,
@@ -123,20 +141,38 @@ class CloudflareClient:
     ) -> dict[str, Any]:
         """Invokes Cloudflare Workers AI to generate structured migration & risk analysis."""
         url = f"{self.base_url}/ai/run/{settings.cf_ai_model}"
+        start = time.perf_counter()
 
         compact_diff = json.dumps(diff_summary, separators=(",", ":"))
         if len(compact_diff) > settings.max_diff_chars:
             compact_diff = compact_diff[:settings.max_diff_chars] + "...[truncated]"
 
         payload = self._build_payload(endpoint_name, endpoint_url, compact_diff, strict_json=True)
-        resp = await client.post(url, headers=self.headers, json=payload)
-        resp.raise_for_status()
-        data = resp.json()
+        try:
+            resp = await client.post(url, headers=self.headers, json=payload)
+            resp.raise_for_status()
+            data = resp.json()
+        except Exception as exc:
+            duration_ms = int((time.perf_counter() - start) * 1000)
+            logger.warning(
+                "Workers AI initial call failed",
+                endpoint_name=endpoint_name,
+                duration_ms=duration_ms,
+                error=str(exc)[:200],
+            )
+            raise
 
+        duration_ms = int((time.perf_counter() - start) * 1000)
         self._log_envelope(data, "initial_response")
 
         if not data.get("success", True):
             errors = data.get("errors") or []
+            logger.warning(
+                "Workers AI initial call reported failure",
+                endpoint_name=endpoint_name,
+                duration_ms=duration_ms,
+                errors=errors,
+            )
             raise RuntimeError(
                 f"Workers AI upstream reported failure (success=False): {errors}"
             )
@@ -145,16 +181,35 @@ class CloudflareClient:
 
         if not raw_text:
             logger.warning(
-                "Workers AI returned empty response after initial call; retrying with shorter diff and strict_json=False"
+                "Workers AI returned empty response after initial call; retrying",
+                endpoint_name=endpoint_name,
+                duration_ms=duration_ms,
             )
+            retry_start = time.perf_counter()
             payload = self._build_payload(endpoint_name, endpoint_url, compact_diff[:2000], strict_json=False)
-            resp = await client.post(url, headers=self.headers, json=payload)
-            resp.raise_for_status()
-            retry_data = resp.json()
+            try:
+                resp = await client.post(url, headers=self.headers, json=payload)
+                resp.raise_for_status()
+                retry_data = resp.json()
+            except Exception as exc:
+                retry_duration_ms = int((time.perf_counter() - retry_start) * 1000)
+                logger.warning(
+                    "Workers AI retry call failed",
+                    endpoint_name=endpoint_name,
+                    duration_ms=retry_duration_ms,
+                    error=str(exc)[:200],
+                )
+                raise
+
             self._log_envelope(retry_data, "retry_response")
 
             if not retry_data.get("success", True):
                 errors = retry_data.get("errors") or []
+                logger.warning(
+                    "Workers AI retry reported failure",
+                    endpoint_name=endpoint_name,
+                    errors=errors,
+                )
                 raise RuntimeError(
                     f"Workers AI retry reported failure (success=False): {errors}"
                 )
@@ -163,8 +218,9 @@ class CloudflareClient:
 
         if not raw_text:
             logger.error(
-                "Workers AI returned empty text on both attempts; cannot produce analysis. "
-                "Check model availability, response_format support, and diff size."
+                "Workers AI returned empty text on both attempts",
+                endpoint_name=endpoint_name,
+                duration_ms=duration_ms,
             )
 
         ai_result = self._parse_llm_json(raw_text, diff_summary=diff_summary)
@@ -198,7 +254,10 @@ class CloudflareClient:
             cleaned = cleaned[start : end + 1]
 
         if not cleaned:
-            logger.warning("Workers AI returned empty text; applying empty-response fallback")
+            logger.warning(
+                "Workers AI returned empty text; applying empty-response fallback",
+                diff_keys=list(diff_summary.keys()) if isinstance(diff_summary, dict) else None,
+            )
             return {
                 "severity": "WARNING",
                 "analysis": "Automated drift analysis completed; LLM returned no usable output.",
@@ -208,7 +267,7 @@ class CloudflareClient:
         try:
             parsed = json.loads(cleaned)
             raw_sev = str(parsed.get("severity", "WARNING")).upper().strip()
-            severity = raw_sev if raw_sev in VALID_SEVERITIES else "WARNING"
+            severity = raw_sev if raw_sev in _VALID_SEVERITIES else "WARNING"
             patch_snippet = str(parsed.get("patch_snippet", "")).strip()
             if not patch_snippet:
                 patch_snippet = self._fallback_patch_snippet(diff_summary)
@@ -218,7 +277,11 @@ class CloudflareClient:
                 "patch_snippet": patch_snippet,
             }
         except json.JSONDecodeError:
-            logger.warning("Workers AI returned non-JSON output (len=%d): %r", len(raw_text), raw_text[:120])
+            logger.warning(
+                "Workers AI returned non-JSON output",
+                raw_text_len=len(raw_text),
+                raw_text_preview=raw_text[:120],
+            )
             return {
                 "severity": "WARNING",
                 "analysis": raw_text[:500] if raw_text else "Automated drift analysis completed.",
@@ -240,6 +303,7 @@ class CloudflareClient:
     ) -> None:
         """Updates drift_incidents row in Cloudflare D1 matching schema."""
         url = f"{self.base_url}/d1/database/{settings.cf_d1_database_id}/query"
+        start = time.perf_counter()
 
         if incident_id is not None:
             sql = """
@@ -287,4 +351,13 @@ class CloudflareClient:
             headers=self.headers,
             json={"sql": sql.strip(), "params": params},
         )
+        duration_ms = int((time.perf_counter() - start) * 1000)
         resp.raise_for_status()
+        logger.info(
+            "D1 incident updated",
+            incident_id=incident_id,
+            endpoint_id=endpoint_id,
+            severity=severity,
+            severity_score=severity_score,
+            duration_ms=duration_ms,
+        )

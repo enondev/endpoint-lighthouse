@@ -10,7 +10,11 @@ from app.config import settings
 def test_health_endpoint(client: TestClient) -> None:
     resp = client.get("/health")
     assert resp.status_code == 200
-    assert resp.json() == {"status": "ok", "service": "ai-worker"}
+    body = resp.json()
+    assert body["service"] == "ai-worker"
+    assert body["status"] in ("ok", "degraded")
+    assert "cloudflare_api" in body
+    assert "version" in body
 
 
 def test_analyze_rejects_missing_or_invalid_secret(client: TestClient) -> None:
@@ -138,3 +142,13 @@ def test_analyze_returns_502_when_kv_fetch_fails(
     )
     assert resp.status_code == 502
     assert "Upstream service error: 404" in resp.json()["detail"]
+
+
+def test_metrics_endpoint(client: TestClient) -> None:
+    resp = client.get("/metrics")
+    assert resp.status_code == 200
+    assert "text/plain" in resp.headers.get("content-type", "")
+    body = resp.text
+    assert "endpoint_lighthouse_aiworker_http_requests_total" in body
+    assert "endpoint_lighthouse_aiworker_analyze_requests_total" in body
+    assert "endpoint_lighthouse_aiworker_llm_calls_total" in body
