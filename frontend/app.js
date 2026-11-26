@@ -126,6 +126,9 @@ const els = {
   modalMetaStatus: document.getElementById("modal-meta-status"),
   btnCloseModal: document.getElementById("btn-close-modal"),
   btnCopyPatch: document.getElementById("btn-copy-patch"),
+  btnAcknowledge: document.getElementById("btn-acknowledge"),
+  btnResolve: document.getElementById("btn-resolve"),
+  btnReopen: document.getElementById("btn-reopen"),
 };
 
 // Initialization
@@ -206,6 +209,17 @@ function init() {
     }
   });
 
+  // Incident status transitions
+  els.btnAcknowledge.addEventListener("click", async () => {
+    await transitionIncident("ACKNOWLEDGED");
+  });
+  els.btnResolve.addEventListener("click", async () => {
+    await transitionIncident("RESOLVED");
+  });
+  els.btnReopen.addEventListener("click", async () => {
+    await transitionIncident("OPEN");
+  });
+
   bootstrapData(state.dateFrom, state.dateTo, state.statusFilter, state.page);
   connectSSE();
 }
@@ -218,6 +232,50 @@ async function fetchJSON(path) {
     throw new Error("Gateway request failed");
   }
   return res.json();
+}
+
+async function patchIncidentStatus(incidentId, newStatus) {
+  const res = await fetch(`${state.apiBase}/api/v1/incidents/${incidentId}/status`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ status: newStatus }),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.error || "Status update failed");
+  }
+  return res.json();
+}
+
+async function transitionIncident(newStatus) {
+  const incId = els.modalMetaId.textContent;
+  if (!incId || incId === "—") return;
+
+  const oldStatus = els.modalMetaStatus.textContent;
+
+  try {
+    await patchIncidentStatus(incId, newStatus);
+
+    // Update local state so the list reflects the change immediately
+    const idx = state.incidents.findIndex((i) => String(i.id) === incId);
+    if (idx >= 0) {
+      state.incidents[idx].status = newStatus;
+    }
+
+    // Update modal chips
+    els.modalStatusChip.textContent = newStatus;
+    els.modalStatusChip.className = `status-chip ${newStatus.toLowerCase()}`;
+    els.modalMetaStatus.textContent = newStatus;
+
+    // Re-render incident list so card status chip updates
+    renderIncidents();
+    updateKPIs();
+
+    // Close modal after a brief moment so user sees the change
+    setTimeout(() => els.modal.close(), 800);
+  } catch (err) {
+    alert("Failed to update status: " + err.message);
+  }
 }
 
 async function bootstrapData(from, to, status, page) {
@@ -564,6 +622,14 @@ function openIncidentModal(inc) {
   els.modalMetaScore.textContent = String(inc.severity_score || "—");
   els.modalMetaDetected.textContent = relativeTime(inc.detected_at);
   els.modalMetaStatus.textContent = status;
+
+  // Show/hide status action buttons based on current status
+  const isOpen = status === "OPEN";
+  const isAcknowledged = status === "ACKNOWLEDGED";
+  const isResolved = status === "RESOLVED";
+  els.btnAcknowledge.style.display = isOpen ? "inline-block" : "none";
+  els.btnResolve.style.display = (isOpen || isAcknowledged) ? "inline-block" : "none";
+  els.btnReopen.style.display = (isAcknowledged || isResolved) ? "inline-block" : "none";
 
   let formattedDiff = inc.diff_summary || "{}";
   if (typeof formattedDiff === "string") {
