@@ -34,21 +34,24 @@ probe ──POST /internal/drift──► api ──POST /analyze──► ai-wo
 - `schema_baselines` — per-endpoint schema snapshots (`schema_hash`, `kv_snapshot_key`, `is_current`)
 - `probe_runs` — per-probe observation records
 - Cloudflare KV — snapshot storage keyed by `snap:<endpoint_id>:<hash_prefix>`
+- `webhook_endpoints` — outbound webhook dispatch targets for drift notifications
 
-### Database migrations
+### Database schema
 
-Schema changes are managed via versioned migration files in `migrations/`:
+Schema lives in `migrations/schema.sql` (single file). Apply via your preferred D1 client (Cloudflare HTTP API, wrangler, or similar):
 
-| File | Description |
-|------|-------------|
-| `001_initial_schema.sql` | Core tables: `endpoints`, `schema_baselines`, `probe_runs`, `drift_incidents` |
-| `002_contract_drift_tables.sql` | Contract drift tables: `sources`, `operations`, `probes`, `observations`, `diffs` |
-| `003_add_inconclusive_status.sql` | Documents `INCONCLUSIVE` status for `drift_incidents` (app-level enforcement) |
-| `schema.sql` | Legacy combined schema (kept for reference) |
-| `seeds.sql` | Seed data for endpoints and sources |
-| `old.sql` / `seed_discovered.sql` | Legacy migration files |
+```bash
+# Inspect (always run SELECT COUNT(*) first before destructive remote statements)
+SELECT COUNT(*) FROM sources;
+SELECT COUNT(*) FROM operations;
+SELECT COUNT(*) FROM diffs;
 
-Apply migrations in order (001 → 002 → 003). SQLite does not support `ALTER TABLE ... ADD CONSTRAINT`, so the `drift_incidents.status` column accepts any `TEXT` value; new status values (e.g., `INCONCLUSIVE`) are enforced at the application level.
+# Apply schema
+-- file: migrations/schema.sql
+-- file: migrations/seeds.sql
+```
+
+Never run destructive statements against remote D1 without first running the equivalent `SELECT COUNT(*)` and confirming the expected row count.
 
 ### Testing (offline against local mocks)
 
