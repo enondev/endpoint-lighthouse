@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -416,12 +417,31 @@ func TestPublicEndpointsD1ErrorHandling(t *testing.T) {
 	srv := buildTestMux(env, "secret")
 
 	env.D1.Handler = func(sql string, params []any) ([]map[string]any, int, error) {
+		// Return account info for auth queries
+		if strings.Contains(sql, "accounts") && strings.Contains(sql, "api_key") {
+			return []map[string]any{
+				{
+					"id":                  "acc-test-1",
+					"name":                "Test Account",
+					"api_key":             "test-api-key",
+					"plan_tier":           "free",
+					"rate_limit_tier":     "free",
+					"webhook_endpoint_limit": 3,
+					"endpoint_limit":      5,
+					"incident_limit_monthly": 100,
+					"created_at":          "2026-01-01T00:00:00Z",
+					"updated_at":          "2026-01-01T00:00:00Z",
+				},
+			}, http.StatusOK, nil
+		}
+		// Return error for all other queries
 		return nil, http.StatusBadGateway, errors.New("d1 upstream unavailable")
 	}
 
 	for _, path := range []string{"/api/v1/status", "/api/v1/endpoints", "/api/v1/incidents"} {
 		t.Run(path, func(t *testing.T) {
 			req := httptest.NewRequest(http.MethodGet, path, nil)
+			req.Header.Set("X-API-Key", "test-api-key")
 			rec := httptest.NewRecorder()
 			srv.ServeHTTP(rec, req)
 
