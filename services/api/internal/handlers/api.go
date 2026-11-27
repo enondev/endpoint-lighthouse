@@ -86,13 +86,6 @@ func (h *APIHandler) HandleEndpoints(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	logger := h.logger.With(append(observability.WithTrace(ctx), slog.String("handler", "endpoints"))...)
 
-	accountID, ok := accountIDFromCtx(ctx)
-	if !ok {
-		logger.Warn("endpoints list missing account ID in context")
-		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
-		return
-	}
-
 	start := time.Now()
 	sql := `
 		SELECT
@@ -116,11 +109,10 @@ func (h *APIHandler) HandleEndpoints(w http.ResponseWriter, r *http.Request) {
 			(SELECT probed_at FROM probe_runs pr WHERE pr.endpoint_id = e.id ORDER BY pr.probed_at DESC LIMIT 1) AS last_probed_at
 		FROM endpoints e
 		LEFT JOIN schema_baselines sb ON sb.endpoint_id = e.id AND sb.is_current = 1
-		WHERE e.account_id = ?
 		ORDER BY e.category ASC, e.name ASC
 	`
-	rows, err := h.d1.Query(ctx, sql, accountID)
 	duration := time.Since(start)
+	rows, err := h.d1.Query(ctx, sql)
 	if err != nil {
 		logger.Error("endpoints endpoint d1 query failed", slog.String("error", err.Error()), slog.Duration("duration", duration))
 		writeJSON(w, http.StatusBadGateway, map[string]string{"error": err.Error()})
@@ -134,13 +126,6 @@ func (h *APIHandler) HandleEndpoints(w http.ResponseWriter, r *http.Request) {
 func (h *APIHandler) HandleIncidents(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	logger := h.logger.With(append(observability.WithTrace(ctx), slog.String("handler", "incidents"))...)
-
-	accountID, ok := accountIDFromCtx(ctx)
-	if !ok {
-		logger.Warn("incidents list missing account ID in context")
-		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
-		return
-	}
 
 	start := time.Now()
 	limit := 25
@@ -162,8 +147,8 @@ func (h *APIHandler) HandleIncidents(w http.ResponseWriter, r *http.Request) {
 	fromFilter := r.URL.Query().Get("from")
 	toFilter := r.URL.Query().Get("to")
 
-	whereSql := "WHERE di.account_id = ?"
-	args := []any{accountID}
+	whereSql := "WHERE 1=1"
+	args := []any{}
 
 	if statusFilter == "OPEN" || statusFilter == "ACKNOWLEDGED" || statusFilter == "RESOLVED" || statusFilter == "INCONCLUSIVE" {
 		whereSql += " AND di.status = ?"
@@ -404,42 +389,35 @@ func (h *APIHandler) HandleIncidentByID(w http.ResponseWriter, r *http.Request) 
 	ctx := r.Context()
 	logger := h.logger.With(append(observability.WithTrace(ctx), slog.String("handler", "incident_by_id"))...)
 
-	start := time.Now()
-	idStr := r.PathValue("id")
-	if idStr == "" {
-		logger.Warn("incident by id missing id parameter")
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "missing id"})
-		return
-	}
+		start := time.Now()
+		idStr := r.PathValue("id")
+		if idStr == "" {
+			logger.Warn("incident by id missing id parameter")
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "missing id"})
+			return
+		}
 
-	accountID, ok := accountIDFromCtx(ctx)
-	if !ok {
-		logger.Warn("incident by id missing account ID in context")
-		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
-		return
-	}
-
-	sql := `
-		SELECT
-			di.id,
-			di.endpoint_id,
-			e.name AS endpoint_name,
-			e.category AS endpoint_category,
-			di.old_schema_hash,
-			di.new_schema_hash,
-			di.severity,
-			di.severity_score,
-			di.diff_summary,
-			di.ai_analysis,
-			di.ai_patch_snippet,
-			di.status,
-			di.detected_at
-		FROM drift_incidents di
-		LEFT JOIN endpoints e ON e.id = di.endpoint_id
-		WHERE di.id = ? AND di.account_id = ?
-		LIMIT 1
-	`
-	rows, err := h.d1.Query(ctx, sql, idStr, accountID)
+		sql := `
+			SELECT
+				di.id,
+				di.endpoint_id,
+				e.name AS endpoint_name,
+				e.category AS endpoint_category,
+				di.old_schema_hash,
+				di.new_schema_hash,
+				di.severity,
+				di.severity_score,
+				di.diff_summary,
+				di.ai_analysis,
+				di.ai_patch_snippet,
+				di.status,
+				di.detected_at
+			FROM drift_incidents di
+			LEFT JOIN endpoints e ON e.id = di.endpoint_id
+			WHERE di.id = ?
+			LIMIT 1
+		`
+		rows, err := h.d1.Query(ctx, sql, idStr)
 	duration := time.Since(start)
 	if err != nil {
 		logger.Error("incident by id d1 query failed", slog.String("error", err.Error()), slog.Duration("duration", duration))
