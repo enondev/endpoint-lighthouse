@@ -135,6 +135,16 @@ CREATE INDEX IF NOT EXISTS idx_diffs_operation_id ON diffs(operation_id);
 CREATE INDEX IF NOT EXISTS idx_diffs_severity ON diffs(severity);
 CREATE INDEX IF NOT EXISTS idx_diffs_status ON diffs(status);
 
+-- Table: webhook_endpoints — outbound webhook dispatch targets
+CREATE TABLE IF NOT EXISTS webhook_endpoints (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    url TEXT NOT NULL UNIQUE,
+    secret TEXT,
+    is_active INTEGER NOT NULL DEFAULT 1,
+    last_fired TEXT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
 -- drift_incidents.status now also allows 'INCONCLUSIVE' (in addition to
 -- 'OPEN', 'ACKNOWLEDGED', 'RESOLVED') for probe-failure outcomes.
 -- Enforced at application level; SQLite CHECK constraints cannot be altered

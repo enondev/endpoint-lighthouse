@@ -34,6 +34,24 @@ probe ──POST /internal/drift──► api ──POST /analyze──► ai-wo
 - `schema_baselines` — per-endpoint schema snapshots (`schema_hash`, `kv_snapshot_key`, `is_current`)
 - `probe_runs` — per-probe observation records
 - Cloudflare KV — snapshot storage keyed by `snap:<endpoint_id>:<hash_prefix>`
+- `webhook_endpoints` — outbound webhook dispatch targets for drift notifications
+
+### Database schema
+
+Schema lives in `migrations/schema.sql` (single file). Apply via your preferred D1 client (Cloudflare HTTP API, wrangler, or similar):
+
+```bash
+# Inspect (always run SELECT COUNT(*) first before destructive remote statements)
+SELECT COUNT(*) FROM sources;
+SELECT COUNT(*) FROM operations;
+SELECT COUNT(*) FROM diffs;
+
+# Apply schema
+-- file: migrations/schema.sql
+-- file: migrations/seeds.sql
+```
+
+Never run destructive statements against remote D1 without first running the equivalent `SELECT COUNT(*)` and confirming the expected row count.
 
 ### Testing (offline against local mocks)
 
