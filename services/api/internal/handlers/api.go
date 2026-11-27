@@ -1,9 +1,11 @@
 package handlers
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"strconv"
@@ -19,6 +21,9 @@ type APIHandler struct {
 	d1     *cloudflare.D1Client
 	hub    *sse.Hub
 	logger *slog.Logger
+
+	InternalWebhookSecret string
+	httpClient            *http.Client
 }
 
 type PendingIncident struct {
@@ -521,7 +526,142 @@ func (h *APIHandler) HandleIncidentStatusUpdate(w http.ResponseWriter, r *http.R
 	})
 }
 
-func writeJSON(w http.ResponseWriter, status int, data any) {
+// HandleWebhookEndpointsList lists all registered webhook endpoints.
+func (h *APIHandler) HandleWebhookEndpointsList(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	logger := h.logger.With(append(observability.WithTrace(ctx), slog.String("handler", "webhook_endpoints_list"))...)
+
+	start := time.Now()
+	sql := `
+		SELECT id, url, secret, is_active, last_fired, created_at
+		FROM webhook_endpoints
+		ORDER BY created_at DESC
+	`
+	rows, err := h.d1.Query(ctx, sql)
+	duration := time.Since(start)
+	if err != nil {
+		logger.Error("webhook endpoints list d1 query failed", slog.String("error", err.Error()), slog.Duration("duration", duration))
+		writeJSON(w, http.StatusBadGateway, map[string]string{"error": err.Error()})
+		return
+	}
+
+	logger.Info("webhook endpoints listed", slog.Int("count", len(rows)), slog.Duration("duration", duration))
+	writeJSON(w, http.StatusOK, map[string]any{"webhook_endpoints": rows})
+}
+
+// HandleWebhookEndpointCreate registers a new webhook endpoint for drift notifications.
+func (h *APIHandler) HandleWebhookEndpointCreate(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	logger := h.logger.With(append(observability.WithTrace(ctx), slog.String("handler", "webhook_endpoint_create"))...)
+
+	var req struct {
+		URL     string `json:"url"`
+		Secret  string `json:"secret,omitempty"`
+	}
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&req); err != nil {
+		logger.Warn("webhook endpoint create invalid json", slog.String("error", err.Error()))
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid json"})
+		return
+	}
+
+	if req.URL == "" {
+		logger.Warn("webhook endpoint create missing url")
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "url is required"})
+		return
+	}
+
+	_, err := h.d1.Query(ctx, `
+		INSERT INTO webhook_endpoints (url, secret, is_active, created_at)
+		VALUES (?, ?, 1, datetime('now'))
+	`, req.URL, req.Secret)
+	if err != nil {
+		logger.Error("webhook endpoint create d1 insert failed", slog.String("error", err.Error()))
+		writeJSON(w, http.StatusBadGateway, map[string]string{"error": err.Error()})
+		return
+	}
+
+	logger.Info("webhook endpoint created", slog.String("url", req.URL))
+	writeJSON(w, http.StatusCreated, map[string]string{"status": "created"})
+}
+
+// HandleWebhookEndpointDelete removes a webhook endpoint by ID.
+func (h *APIHandler) HandleWebhookEndpointDelete(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	logger := h.logger.With(append(observability.WithTrace(ctx), slog.String("handler", "webhook_endpoint_delete"))...)
+
+	idStr := r.PathValue("id")
+	if idStr == "" {
+		logger.Warn("webhook endpoint delete missing id parameter")
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "missing id"})
+		return
+	}
+
+	_, err := h.d1.Query(ctx, `DELETE FROM webhook_endpoints WHERE id = ?`, idStr)
+	if err != nil {
+		logger.Error("webhook endpoint delete d1 delete failed", slog.String("error", err.Error()))
+		writeJSON(w, http.StatusBadGateway, map[string]string{"error": err.Error()})
+		return
+	}
+
+	logger.Info("webhook endpoint deleted", slog.String("id", idStr))
+	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
+}
+
+// dispatchWebhook POSTs an incident payload to all registered webhook endpoints.
+// Errors are logged but do not block the caller; individual webhook failures
+// do not prevent other webhooks from being dispatched.
+func (h *APIHandler) dispatchWebhook(incident map[string]any) {
+	ctx := context.Background()
+	logger := h.logger.With(slog.String("handler", "dispatch_webhook"))
+
+	rows, err := h.d1.Query(ctx, `SELECT id, url, secret FROM webhook_endpoints WHERE is_active = 1`)
+	if err != nil {
+		logger.Error("webhook dispatch query failed", slog.String("error", err.Error()))
+		return
+	}
+	if len(rows) == 0 {
+		logger.Debug("no webhook endpoints registered")
+		return
+	}
+
+	body, err := json.Marshal(incident)
+	if err != nil {
+		logger.Error("webhook dispatch marshal failed", slog.String("error", err.Error()))
+		return
+	}
+
+	for _, row := range rows {
+		url, _ := row["url"].(string)
+		secret, _ := row["secret"].(string)
+
+		go func(url, secret string) {
+			req, err := http.NewRequest(http.MethodPost, url, bytes.NewReader(body))
+			if err != nil {
+				logger.Error("webhook dispatch request build failed", slog.String("url", url), slog.String("error", err.Error()))
+				return
+			}
+			req.Header.Set("Content-Type", "application/json")
+			if secret != "" {
+				req.Header.Set("X-Webhook-Secret", secret)
+			}
+			if h.InternalWebhookSecret != "" {
+				req.Header.Set("X-Internal-Secret", h.InternalWebhookSecret)
+			}
+
+			resp, err := h.httpClient.Do(req)
+			if err != nil {
+				logger.Error("webhook dispatch failed", slog.String("url", url), slog.String("error", err.Error()))
+				return
+			}
+			resp.Body.Close()
+			if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+				logger.Debug("webhook dispatched", slog.String("url", url), slog.Int("status", resp.StatusCode))
+			} else {
+				logger.Warn("webhook dispatch failed", slog.String("url", url), slog.Int("status", resp.StatusCode))
+			}
+		}(url, secret)
+	}
+}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(data)
