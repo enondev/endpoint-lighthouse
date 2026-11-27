@@ -25,6 +25,8 @@ import (
 	"github.com/enondev/endpoint-lighthouse-api/internal/observability"
 	"github.com/enondev/endpoint-lighthouse-api/internal/redis"
 	"github.com/enondev/endpoint-lighthouse-api/internal/sse"
+)
+
 
 type DriftWebhookPayload struct {
 	IncidentID     int64  `json:"incident_id,omitempty"`
@@ -139,12 +141,12 @@ func main() {
 		w.Write(body)
 	}))))
 
-	// Public REST & SSE Endpoints
+	// Public REST & SSE Endpoints (open to all)
 	mux.Handle("GET /api/v1/status", withCORS(cfg.AllowedOrigin, withRequestID(logger, observability.Handler("/api/v1/status", apiRateLimitMiddleware(http.HandlerFunc(apiHandler.HandleStatus))))))
 	mux.Handle("GET /api/v1/endpoints", withCORS(cfg.AllowedOrigin, withRequestID(logger, observability.Handler("/api/v1/endpoints", apiRateLimitMiddleware(http.HandlerFunc(apiHandler.HandleEndpoints))))))
 	mux.Handle("GET /api/v1/incidents", withCORS(cfg.AllowedOrigin, withRequestID(logger, observability.Handler("/api/v1/incidents", apiRateLimitMiddleware(http.HandlerFunc(apiHandler.HandleIncidents))))))
 	mux.Handle("GET /api/v1/incidents/{id}", withCORS(cfg.AllowedOrigin, withRequestID(logger, observability.Handler("/api/v1/incidents/{id}", apiRateLimitMiddleware(http.HandlerFunc(apiHandler.HandleIncidentByID))))))
-	mux.Handle("PATCH /api/v1/incidents/{id}/status", withCORS(cfg.AllowedOrigin, withRequestID(logger, observability.Handler("/api/v1/incidents/{id}/status", apiRateLimitMiddleware(http.HandlerFunc(apiHandler.HandleIncidentStatusUpdate))))))
+	mux.Handle("PATCH /api/v1/incidents/{id}/status", withCORS(cfg.AllowedOrigin, withRequestID(logger, observability.Handler("/api/v1/incidents/{id}/status", apiRateLimitMiddleware(authMiddleware.Middleware(http.HandlerFunc(apiHandler.HandleIncidentStatusUpdate)))))))
 	mux.Handle("GET /api/v1/stream", withCORS(cfg.AllowedOrigin, withRequestID(logger, hub)))
 
 	// Public: Account management (create account)
@@ -438,7 +440,7 @@ func apiRateLimitAllowed(clientIP string) bool {
 }
 
 // apiRateLimitMiddleware wraps a handler with IP-based rate limiting.
-func apiRateLimitMiddleware(next http.HandlerFunc) http.HandlerFunc {
+func apiRateLimitMiddleware(next http.Handler) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		identifier := r.RemoteAddr
 		if forwarded := r.Header.Get("X-Forwarded-For"); forwarded != "" {
