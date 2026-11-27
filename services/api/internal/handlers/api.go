@@ -86,6 +86,13 @@ func (h *APIHandler) HandleEndpoints(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	logger := h.logger.With(append(observability.WithTrace(ctx), slog.String("handler", "endpoints"))...)
 
+	accountID, ok := accountIDFromCtx(ctx)
+	if !ok {
+		logger.Warn("endpoints list missing account ID in context")
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
+		return
+	}
+
 	start := time.Now()
 	sql := `
 		SELECT
@@ -109,9 +116,10 @@ func (h *APIHandler) HandleEndpoints(w http.ResponseWriter, r *http.Request) {
 			(SELECT probed_at FROM probe_runs pr WHERE pr.endpoint_id = e.id ORDER BY pr.probed_at DESC LIMIT 1) AS last_probed_at
 		FROM endpoints e
 		LEFT JOIN schema_baselines sb ON sb.endpoint_id = e.id AND sb.is_current = 1
+		WHERE e.account_id = ?
 		ORDER BY e.category ASC, e.name ASC
 	`
-	rows, err := h.d1.Query(ctx, sql)
+	rows, err := h.d1.Query(ctx, sql, accountID)
 	duration := time.Since(start)
 	if err != nil {
 		logger.Error("endpoints endpoint d1 query failed", slog.String("error", err.Error()), slog.Duration("duration", duration))
@@ -126,6 +134,13 @@ func (h *APIHandler) HandleEndpoints(w http.ResponseWriter, r *http.Request) {
 func (h *APIHandler) HandleIncidents(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	logger := h.logger.With(append(observability.WithTrace(ctx), slog.String("handler", "incidents"))...)
+
+	accountID, ok := accountIDFromCtx(ctx)
+	if !ok {
+		logger.Warn("incidents list missing account ID in context")
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
+		return
+	}
 
 	start := time.Now()
 	limit := 25
@@ -147,8 +162,8 @@ func (h *APIHandler) HandleIncidents(w http.ResponseWriter, r *http.Request) {
 	fromFilter := r.URL.Query().Get("from")
 	toFilter := r.URL.Query().Get("to")
 
-	whereSql := "WHERE 1=1"
-	args := []any{}
+	whereSql := "WHERE di.account_id = ?"
+	args := []any{accountID}
 
 	if statusFilter == "OPEN" || statusFilter == "ACKNOWLEDGED" || statusFilter == "RESOLVED" || statusFilter == "INCONCLUSIVE" {
 		whereSql += " AND di.status = ?"
@@ -397,6 +412,13 @@ func (h *APIHandler) HandleIncidentByID(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
+	accountID, ok := accountIDFromCtx(ctx)
+	if !ok {
+		logger.Warn("incident by id missing account ID in context")
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
+		return
+	}
+
 	sql := `
 		SELECT
 			di.id,
@@ -414,10 +436,10 @@ func (h *APIHandler) HandleIncidentByID(w http.ResponseWriter, r *http.Request) 
 			di.detected_at
 		FROM drift_incidents di
 		LEFT JOIN endpoints e ON e.id = di.endpoint_id
-		WHERE di.id = ?
+		WHERE di.id = ? AND di.account_id = ?
 		LIMIT 1
 	`
-	rows, err := h.d1.Query(ctx, sql, idStr)
+	rows, err := h.d1.Query(ctx, sql, idStr, accountID)
 	duration := time.Since(start)
 	if err != nil {
 		logger.Error("incident by id d1 query failed", slog.String("error", err.Error()), slog.Duration("duration", duration))
@@ -448,6 +470,13 @@ func (h *APIHandler) HandleIncidentStatusUpdate(w http.ResponseWriter, r *http.R
 		return
 	}
 
+	accountID, ok := accountIDFromCtx(ctx)
+	if !ok {
+		logger.Warn("incident status update missing account ID in context")
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
+		return
+	}
+
 	var req struct {
 		Status string `json:"status"`
 	}
@@ -466,8 +495,8 @@ func (h *APIHandler) HandleIncidentStatusUpdate(w http.ResponseWriter, r *http.R
 	}
 
 	// First, fetch the current incident to validate transition
-	sql := `SELECT status FROM drift_incidents WHERE id = ? LIMIT 1`
-	rows, err := h.d1.Query(ctx, sql, idStr)
+	sql := `SELECT status FROM drift_incidents WHERE id = ? AND account_id = ? LIMIT 1`
+	rows, err := h.d1.Query(ctx, sql, idStr, accountID)
 	if err != nil {
 		logger.Error("incident status update d1 query failed", slog.String("error", err.Error()), slog.Duration("duration", time.Since(start)))
 		writeJSON(w, http.StatusBadGateway, map[string]string{"error": err.Error()})
