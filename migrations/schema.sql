@@ -1,7 +1,23 @@
 PRAGMA foreign_keys = ON;
 
+-- Table: accounts — multi-tenant account for webhook endpoint isolation
+CREATE TABLE IF NOT EXISTS accounts (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    api_key TEXT NOT NULL UNIQUE,
+    plan_tier TEXT NOT NULL DEFAULT 'free',
+    rate_limit_tier TEXT NOT NULL DEFAULT 'free',
+    webhook_endpoint_limit INTEGER NOT NULL DEFAULT 3,
+    endpoint_limit INTEGER NOT NULL DEFAULT 5,
+    incident_limit_monthly INTEGER NOT NULL DEFAULT 100,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+-- Table: endpoints — monitored endpoints to poll
 CREATE TABLE IF NOT EXISTS endpoints (
     id TEXT PRIMARY KEY,
+    account_id TEXT NOT NULL,
     name TEXT NOT NULL,
     category TEXT NOT NULL,               -- e.g., 'status', 'finance', 'weather', 'registry', 'openapi', 'smoke'
     url TEXT NOT NULL UNIQUE,
@@ -10,9 +26,11 @@ CREATE TABLE IF NOT EXISTS endpoints (
     is_active INTEGER NOT NULL DEFAULT 1,
     last_etag TEXT,
     last_modified TEXT,
-    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    FOREIGN KEY (account_id) REFERENCES accounts(id) ON DELETE CASCADE
 );
 
+-- Table: schema_baselines — snapshots of endpoint response schemas
 CREATE TABLE IF NOT EXISTS schema_baselines (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     endpoint_id TEXT NOT NULL,
@@ -26,9 +44,11 @@ CREATE TABLE IF NOT EXISTS schema_baselines (
     UNIQUE(endpoint_id, schema_hash)
 );
 
+-- Table: probe_runs — per-probe observation records
 CREATE TABLE IF NOT EXISTS probe_runs (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     endpoint_id TEXT NOT NULL,
+    account_id TEXT NOT NULL,
     status_code INTEGER NOT NULL,
     latency_ms REAL NOT NULL,
     response_size_bytes INTEGER NOT NULL,
@@ -37,12 +57,15 @@ CREATE TABLE IF NOT EXISTS probe_runs (
     drift_detected INTEGER NOT NULL DEFAULT 0,
     error_message TEXT,
     probed_at TEXT NOT NULL DEFAULT (datetime('now')),
-    FOREIGN KEY (endpoint_id) REFERENCES endpoints(id) ON DELETE CASCADE
+    FOREIGN KEY (endpoint_id) REFERENCES endpoints(id) ON DELETE CASCADE,
+    FOREIGN KEY (account_id) REFERENCES accounts(id) ON DELETE CASCADE
 );
 
+-- Table: drift_incidents — detected drift incidents
 CREATE TABLE IF NOT EXISTS drift_incidents (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     endpoint_id TEXT NOT NULL,
+    account_id TEXT NOT NULL,
     old_schema_hash TEXT NOT NULL,
     new_schema_hash TEXT NOT NULL,
     severity TEXT NOT NULL DEFAULT 'PENDING', -- 'PENDING', 'NON_BREAKING', 'WARNING', 'BREAKING'
@@ -52,7 +75,8 @@ CREATE TABLE IF NOT EXISTS drift_incidents (
     ai_patch_snippet TEXT,                    -- Suggested client migration code
     status TEXT NOT NULL DEFAULT 'OPEN',      -- 'OPEN', 'ACKNOWLEDGED', 'RESOLVED', 'INCONCLUSIVE'
     detected_at TEXT NOT NULL DEFAULT (datetime('now')),
-    FOREIGN KEY (endpoint_id) REFERENCES endpoints(id) ON DELETE CASCADE
+    FOREIGN KEY (endpoint_id) REFERENCES endpoints(id) ON DELETE CASCADE,
+    FOREIGN KEY (account_id) REFERENCES accounts(id) ON DELETE CASCADE
 );
 
 -- drift_incidents.status now also allows 'INCONCLUSIVE' (in addition to
@@ -71,59 +95,69 @@ WHERE status = 'OPEN'
 -- Table: sources — vendor spec sources to monitor for contract drift
 CREATE TABLE IF NOT EXISTS sources (
     id INTEGER PRIMARY KEY,
+    account_id TEXT NOT NULL,
     vendor TEXT NOT NULL,
     spec_url TEXT NOT NULL UNIQUE,
     spec_format TEXT,
     pinned_version TEXT,
     etag TEXT,
     content_hash TEXT,
-    last_fetched TEXT
+    last_fetched TEXT,
+    FOREIGN KEY (account_id) REFERENCES accounts(id) ON DELETE CASCADE
 );
 
 -- Table: operations — individual API operations extracted from each source spec
 CREATE TABLE IF NOT EXISTS operations (
     id INTEGER PRIMARY KEY,
     source_id INTEGER NOT NULL REFERENCES sources(id),
+    account_id TEXT NOT NULL,
     method TEXT NOT NULL,
     path_template TEXT NOT NULL,
     operation_id TEXT,
     contract_hash TEXT,
     first_seen TEXT,
     last_seen TEXT,
-    UNIQUE (source_id, method, path_template)
+    UNIQUE (source_id, method, path_template),
+    FOREIGN KEY (account_id) REFERENCES accounts(id) ON DELETE CASCADE
 );
 
 -- Table: probes — live endpoint probing per operation
 CREATE TABLE IF NOT EXISTS probes (
     id INTEGER PRIMARY KEY,
     operation_id INTEGER NOT NULL REFERENCES operations(id),
+    account_id TEXT NOT NULL,
     live_url TEXT NOT NULL,
     auth_ref TEXT,
     last_probed TEXT,
-    last_status INTEGER
+    last_status INTEGER,
+    FOREIGN KEY (account_id) REFERENCES accounts(id) ON DELETE CASCADE
 );
 
 -- Table: observations — per-probe observation records
 CREATE TABLE IF NOT EXISTS observations (
     id INTEGER PRIMARY KEY,
     probe_id INTEGER NOT NULL REFERENCES probes(id),
+    account_id TEXT NOT NULL,
     observed_at TEXT NOT NULL,
     status_code INTEGER,
     content_type TEXT,
     shape_hash TEXT,
-    body_sample TEXT
+    body_sample TEXT,
+    FOREIGN KEY (account_id) REFERENCES accounts(id) ON DELETE CASCADE
 );
 
 -- Table: diffs — contract drift findings
 CREATE TABLE IF NOT EXISTS diffs (
     id INTEGER PRIMARY KEY,
     operation_id INTEGER NOT NULL REFERENCES operations(id),
+    account_id TEXT NOT NULL,
     detected_at TEXT NOT NULL,
     kind TEXT NOT NULL,
     severity TEXT,
     spec_side TEXT,
     live_side TEXT,
-    status TEXT DEFAULT 'open'
+    status TEXT DEFAULT 'open',
+    FOREIGN KEY (account_id) REFERENCES accounts(id) ON DELETE CASCADE
 );
 
 -- Indexes for common query patterns
@@ -134,18 +168,22 @@ CREATE INDEX IF NOT EXISTS idx_observations_probe_id ON observations(probe_id);
 CREATE INDEX IF NOT EXISTS idx_diffs_operation_id ON diffs(operation_id);
 CREATE INDEX IF NOT EXISTS idx_diffs_severity ON diffs(severity);
 CREATE INDEX IF NOT EXISTS idx_diffs_status ON diffs(status);
+CREATE INDEX IF NOT EXISTS idx_endpoints_account_id ON endpoints(account_id);
+CREATE INDEX IF NOT EXISTS idx_probe_runs_endpoint_id ON probe_runs(endpoint_id);
+CREATE INDEX IF NOT EXISTS idx_probe_runs_account_id ON probe_runs(account_id);
+CREATE INDEX IF NOT EXISTS idx_drift_incidents_endpoint_id ON drift_incidents(endpoint_id);
+CREATE INDEX IF NOT EXISTS idx_drift_incidents_status ON drift_incidents(status, detected_at DESC);
+CREATE INDEX IF NOT EXISTS idx_drift_incidents_severity_score ON drift_incidents(severity_score DESC, detected_at DESC);
+CREATE INDEX IF NOT EXISTS idx_drift_incidents_account_id ON drift_incidents(account_id);
 
 -- Table: webhook_endpoints — outbound webhook dispatch targets
 CREATE TABLE IF NOT EXISTS webhook_endpoints (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
+    account_id TEXT NOT NULL,
     url TEXT NOT NULL UNIQUE,
     secret TEXT,
     is_active INTEGER NOT NULL DEFAULT 1,
     last_fired TEXT,
-    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    FOREIGN KEY (account_id) REFERENCES accounts(id) ON DELETE CASCADE
 );
-
--- drift_incidents.status now also allows 'INCONCLUSIVE' (in addition to
--- 'OPEN', 'ACKNOWLEDGED', 'RESOLVED') for probe-failure outcomes.
--- Enforced at application level; SQLite CHECK constraints cannot be altered
--- on existing tables without recreation.
