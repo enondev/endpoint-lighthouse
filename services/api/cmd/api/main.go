@@ -144,6 +144,12 @@ func main() {
 	mux.Handle("PATCH /api/v1/incidents/{id}/status", withCORS(cfg.AllowedOrigin, withRequestID(logger, observability.Handler("/api/v1/incidents/{id}/status", apiRateLimitMiddleware(http.HandlerFunc(apiHandler.HandleIncidentStatusUpdate))))))
 	mux.Handle("GET /api/v1/stream", withCORS(cfg.AllowedOrigin, withRequestID(logger, hub)))
 
+	// Public: Account management (create account)
+	mux.Handle("POST /api/v1/account", withRequestID(logger, http.HandlerFunc(apiHandler.HandleAccountCreate)))
+
+	// Public: Account retrieval (gated by API key)
+	mux.Handle("GET /api/v1/account", withRequestID(logger, http.HandlerFunc(apiHandler.HandleGetAccount)))
+
 	// Internal Webhook: Drift Detected (from probe)
 	mux.Handle("POST /internal/drift", withRequestID(logger, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		ctx := r.Context()
@@ -269,8 +275,13 @@ func main() {
 		logger.Info("reconcile-all complete", slog.Int("dispatched", dispatched))
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusAccepted)
-		_, _ = fmt.Fprintf(w, `{"status":"reconciled-all","dispatched":%d}`, dispatched)
+			_, _ = fmt.Fprintf(w, `{"status":"reconciled-all","dispatched":%d}`, dispatched)
 	})))
+
+	// Public: Webhook endpoint management (gated by API key)
+	mux.Handle("GET /api/v1/webhook-endpoints", withRequestID(logger, http.HandlerFunc(apiHandler.HandleWebhookEndpointsList)))
+	mux.Handle("POST /api/v1/webhook-endpoints", withRequestID(logger, http.HandlerFunc(apiHandler.HandleWebhookEndpointCreate)))
+	mux.Handle("DELETE /api/v1/webhook-endpoints/{id}", withRequestID(logger, http.HandlerFunc(apiHandler.HandleWebhookEndpointDelete)))
 
 	srv := &http.Server{
 		Addr:              ":" + cfg.Port,

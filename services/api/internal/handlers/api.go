@@ -3,6 +3,7 @@ package handlers
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -525,18 +526,116 @@ func (h *APIHandler) HandleIncidentStatusUpdate(w http.ResponseWriter, r *http.R
 	})
 }
 
-// HandleWebhookEndpointsList lists all registered webhook endpoints.
+// HandleWebhookEndpointsList lists all registered webhook endpoints for the account.
+
+// HandleAccountCreate creates a new account (bootstrap only, no auth required).
+func (h *APIHandler) HandleAccountCreate(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	logger := h.logger.With(append(observability.WithTrace(ctx), slog.String("handler", "account_create"))...)
+
+	var req struct {
+		Name string `json:"name"`
+	}
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&req); err != nil {
+		logger.Warn("account create invalid json", slog.String("error", err.Error()))
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid json"})
+		return
+	}
+	if req.Name == "" {
+		logger.Warn("account create missing name")
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "name is required"})
+		return
+	}
+
+	accountID := newRequestID()
+	apiKey := newAPIKey()
+
+	_, err := h.d1.Query(ctx, `
+		INSERT INTO accounts (id, name, api_key, plan_tier, rate_limit_tier,
+		                      webhook_endpoint_limit, endpoint_limit, incident_limit_monthly,
+		                      created_at, updated_at)
+		VALUES (?, ?, ?, 'free', 'free', 3, 5, 100, datetime('now'), datetime('now'))
+	`, accountID, req.Name, apiKey)
+	if err != nil {
+		logger.Error("account create d1 insert failed", slog.String("error", err.Error()))
+		writeJSON(w, http.StatusBadGateway, map[string]string{"error": err.Error()})
+		return
+	}
+
+	logger.Info("account created", slog.String("id", accountID), slog.String("name", req.Name))
+	writeJSON(w, http.StatusCreated, map[string]any{
+		"id":            accountID,
+		"name":          req.Name,
+		"api_key":       apiKey,
+		"plan_tier":     "free",
+		"rate_limit_tier": "free",
+	})
+}
+
+// HandleGetAccount returns the current account (gated by API key).
+func (h *APIHandler) HandleGetAccount(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	logger := h.logger.With(append(observability.WithTrace(ctx), slog.String("handler", "account_get"))...)
+
+	accountID, ok := accountIDFromCtx(ctx)
+	if !ok {
+		logger.Warn("account get missing account ID in context")
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
+		return
+	}
+
+	rows, err := h.d1.Query(ctx, `
+		SELECT id, name, api_key, plan_tier, rate_limit_tier,
+		       webhook_endpoint_limit, endpoint_limit, incident_limit_monthly,
+		       created_at, updated_at
+		FROM accounts WHERE id = ?
+		LIMIT 1
+	`, accountID)
+	if err != nil {
+		logger.Error("account get d1 query failed", slog.String("error", err.Error()))
+		writeJSON(w, http.StatusBadGateway, map[string]string{"error": err.Error()})
+		return
+	}
+	if len(rows) == 0 {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "account not found"})
+		return
+	}
+
+	row := rows[0]
+	writeJSON(w, http.StatusOK, map[string]any{
+		"id":             toString(row["id"]),
+		"name":           toString(row["name"]),
+		"api_key":        toString(row["api_key"]),
+		"plan_tier":      toString(row["plan_tier"]),
+		"rate_limit_tier": toString(row["rate_limit_tier"]),
+		"webhook_endpoint_limit": toInt(row["webhook_endpoint_limit"]),
+		"endpoint_limit":   toInt(row["endpoint_limit"]),
+		"incident_limit_monthly": toInt(row["incident_limit_monthly"]),
+		"created_at":     toString(row["created_at"]),
+		"updated_at":     toString(row["updated_at"]),
+	})
+}
+
+// HandleWebhookEndpointsList lists all registered webhook endpoints for the account.
 func (h *APIHandler) HandleWebhookEndpointsList(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	logger := h.logger.With(append(observability.WithTrace(ctx), slog.String("handler", "webhook_endpoints_list"))...)
+
+	accountID, ok := accountIDFromCtx(ctx)
+	if !ok {
+		logger.Warn("webhook endpoints list missing account ID in context")
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
+		return
+	}
 
 	start := time.Now()
 	sql := `
 		SELECT id, url, secret, is_active, last_fired, created_at
 		FROM webhook_endpoints
+		WHERE account_id = ?
 		ORDER BY created_at DESC
 	`
-	rows, err := h.d1.Query(ctx, sql)
+	rows, err := h.d1.Query(ctx, sql, accountID)
 	duration := time.Since(start)
 	if err != nil {
 		logger.Error("webhook endpoints list d1 query failed", slog.String("error", err.Error()), slog.Duration("duration", duration))
@@ -544,7 +643,7 @@ func (h *APIHandler) HandleWebhookEndpointsList(w http.ResponseWriter, r *http.R
 		return
 	}
 
-	logger.Info("webhook endpoints listed", slog.Int("count", len(rows)), slog.Duration("duration", duration))
+	logger.Info("webhook endpoints listed", slog.Int("count", len(rows)), slog.String("account_id", accountID), slog.Duration("duration", duration))
 	writeJSON(w, http.StatusOK, map[string]any{"webhook_endpoints": rows})
 }
 
@@ -552,6 +651,13 @@ func (h *APIHandler) HandleWebhookEndpointsList(w http.ResponseWriter, r *http.R
 func (h *APIHandler) HandleWebhookEndpointCreate(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	logger := h.logger.With(append(observability.WithTrace(ctx), slog.String("handler", "webhook_endpoint_create"))...)
+
+	accountID, ok := accountIDFromCtx(ctx)
+	if !ok {
+		logger.Warn("webhook endpoint create missing account ID in context")
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
+		return
+	}
 
 	var req struct {
 		URL     string `json:"url"`
@@ -570,16 +676,16 @@ func (h *APIHandler) HandleWebhookEndpointCreate(w http.ResponseWriter, r *http.
 	}
 
 	_, err := h.d1.Query(ctx, `
-		INSERT INTO webhook_endpoints (url, secret, is_active, created_at)
-		VALUES (?, ?, 1, datetime('now'))
-	`, req.URL, req.Secret)
+		INSERT INTO webhook_endpoints (account_id, url, secret, is_active, created_at)
+		VALUES (?, ?, ?, 1, datetime('now'))
+	`, accountID, req.URL, req.Secret)
 	if err != nil {
 		logger.Error("webhook endpoint create d1 insert failed", slog.String("error", err.Error()))
 		writeJSON(w, http.StatusBadGateway, map[string]string{"error": err.Error()})
 		return
 	}
 
-	logger.Info("webhook endpoint created", slog.String("url", req.URL))
+	logger.Info("webhook endpoint created", slog.String("url", req.URL), slog.String("account_id", accountID))
 	writeJSON(w, http.StatusCreated, map[string]string{"status": "created"})
 }
 
@@ -595,14 +701,21 @@ func (h *APIHandler) HandleWebhookEndpointDelete(w http.ResponseWriter, r *http.
 		return
 	}
 
-	_, err := h.d1.Query(ctx, `DELETE FROM webhook_endpoints WHERE id = ?`, idStr)
+	accountID, ok := accountIDFromCtx(ctx)
+	if !ok {
+		logger.Warn("webhook endpoint delete missing account ID in context")
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
+		return
+	}
+
+	_, err := h.d1.Query(ctx, `DELETE FROM webhook_endpoints WHERE id = ? AND account_id = ?`, idStr, accountID)
 	if err != nil {
 		logger.Error("webhook endpoint delete d1 delete failed", slog.String("error", err.Error()))
 		writeJSON(w, http.StatusBadGateway, map[string]string{"error": err.Error()})
 		return
 	}
 
-	logger.Info("webhook endpoint deleted", slog.String("id", idStr))
+	logger.Info("webhook endpoint deleted", slog.String("id", idStr), slog.String("account_id", accountID))
 	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
 }
 
@@ -613,7 +726,13 @@ func (h *APIHandler) dispatchWebhook(incident map[string]any) {
 	ctx := context.Background()
 	logger := h.logger.With(slog.String("handler", "dispatch_webhook"))
 
-	rows, err := h.d1.Query(ctx, `SELECT id, url, secret FROM webhook_endpoints WHERE is_active = 1`)
+	accountID, ok := incident["account_id"].(string)
+	if !ok || accountID == "" {
+		logger.Warn("webhook dispatch missing account_id in incident")
+		return
+	}
+
+	rows, err := h.d1.Query(ctx, `SELECT id, url, secret FROM webhook_endpoints WHERE is_active = 1 AND account_id = ?`, accountID)
 	if err != nil {
 		logger.Error("webhook dispatch query failed", slog.String("error", err.Error()))
 		return
@@ -686,3 +805,30 @@ func toString(v any) string {
 	}
 	return ""
 }
+
+func accountIDFromCtx(ctx context.Context) (string, bool) {
+	id, ok := ctx.Value(accountIDKey{}).(string)
+	return id, ok
+}
+
+func newAPIKey() string {
+	b := make([]byte, 24)
+	if _, err := rand.Read(b); err != nil {
+		// Fallback to time-based ID if crypto fails
+		return fmt.Sprintf("ep_live_%x", time.Now().UnixNano())
+	}
+	return "ep_live_" + fmt.Sprintf("%x", b)
+}
+
+// accountIDKey is the context key for account ID.
+type accountIDKey struct{}
+
+// newRequestID generates a unique request ID.
+func newRequestID() string {
+	b := make([]byte, 8)
+	if _, err := rand.Read(b); err != nil {
+		return fmt.Sprintf("%x", time.Now().UnixNano())
+	}
+	return fmt.Sprintf("%x", b)
+}
+
