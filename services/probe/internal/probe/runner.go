@@ -475,6 +475,9 @@ func (r *Runner) postWebhook(ctx context.Context, targetURL string, body []byte)
 	if r.cfg.InternalWebhookSecret != "" {
 		req.Header.Set("X-Internal-Secret", r.cfg.InternalWebhookSecret)
 	}
+	if r.cfg.InternalAPIKey != "" {
+		req.Header.Set("X-API-Key", r.cfg.InternalAPIKey)
+	}
 	// Inject W3C TraceContext for distributed tracing across service boundaries
 	otel.GetTextMapPropagator().Inject(ctx, propagation.HeaderCarrier(req.Header))
 	resp, err := r.httpClient.Do(req)

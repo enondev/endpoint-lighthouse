@@ -18,6 +18,7 @@ type Config struct {
 	AIWorkerURL           string
 	InternalWebhookSecret string
 	AIWorkerSecret        string
+	InternalAPIKey        string
 	MaxBodyBytes          int64
 	RequestTimeout        time.Duration
 	MaxStartupStagger     time.Duration
@@ -38,6 +39,7 @@ func Load() Config {
 		AIWorkerURL:           os.Getenv("AI_WORKER_URL"),
 		InternalWebhookSecret: os.Getenv("INTERNAL_WEBHOOK_SECRET"),
 		AIWorkerSecret:        os.Getenv("AI_WORKER_SECRET"),
+		InternalAPIKey:        os.Getenv("INTERNAL_API_KEY"),
 		MaxBodyBytes:          int64(getEnvInt("MAX_BODY_BYTES", 5*1024*1024)),
 		RequestTimeout:        time.Duration(getEnvInt("REQUEST_TIMEOUT_SEC", 15)) * time.Second,
 		MaxStartupStagger:     time.Duration(getEnvInt("MAX_STARTUP_STAGGER_SEC", 15)) * time.Second,

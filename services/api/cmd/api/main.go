@@ -21,10 +21,10 @@ import (
 	"github.com/enondev/endpoint-lighthouse-api/internal/cloudflare"
 	"github.com/enondev/endpoint-lighthouse-api/internal/config"
 	"github.com/enondev/endpoint-lighthouse-api/internal/handlers"
+	"github.com/enondev/endpoint-lighthouse-api/internal/middleware"
 	"github.com/enondev/endpoint-lighthouse-api/internal/observability"
 	"github.com/enondev/endpoint-lighthouse-api/internal/redis"
 	"github.com/enondev/endpoint-lighthouse-api/internal/sse"
-)
 
 type DriftWebhookPayload struct {
 	IncidentID     int64  `json:"incident_id,omitempty"`
@@ -79,6 +79,9 @@ func main() {
 	d1 := cloudflare.NewD1Client(cfg.CFAccountID, cfg.CFD1DatabaseID, cfg.CFAPIToken)
 	hub := sse.NewHub(logger)
 	apiHandler := handlers.NewAPIHandler(d1, hub, logger)
+
+	// Auth middleware for public API routes (gated by X-API-Key)
+	authMiddleware := middleware.NewAuthMiddleware(d1, logger)
 
 	mux := http.NewServeMux()
 
